@@ -474,6 +474,8 @@ void on_next_clicked(GtkWidget *widget, gpointer data) {
 
 void on_close_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
+    AppData *app_data = (AppData*)data;
+    LipcSetIntProperty(lipcInstance,"com.lab126.powerd","flIntensity",app_data->flIntensity);
     enableSleep();
     closeLipcInstance();
     AppData *app_data = (AppData*)data;

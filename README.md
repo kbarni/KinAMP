@@ -19,7 +19,7 @@ Features
 - Simple to use
 - Interface optimized for eink displays (minimal redraws to save battery)
 - Fast access to Bluetooth and frontlight settings
-- Uses miniaudio library for decoding.
+- Uses [miniaudio](https://github.com/mackron/miniaudio) library for decoding.
 - Uses the integrated GStreamer as backend
 - No other dependencies
 
