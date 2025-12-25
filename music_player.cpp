@@ -20,8 +20,7 @@
 #include "assets/skip_next_icon.h"
 #include "assets/skip_previous_icon.h"
 #include "assets/stop_icon.h"
-#include "assets/title_icon.h"
-#include "assets/title_christmas.h"
+#include "assets/title.h"
 #include "assets/shuffle_icon.h"
 #include "assets/repeat_icon.h"
 #include "assets/shuffle_on_icon.h"
@@ -73,6 +72,10 @@ void enableSleep() {
 
 void disableSleep() {
     LipcSetIntProperty(lipcInstance,"com.lab126.powerd","preventScreenSaver",1);
+}
+
+void keepBTenabled() {
+    LipcSetIntProperty(lipcInstance,"com.lab126.btfd","ensureBTconnection",1);
 }
 
 void toggleFrontLight(AppData *ad){
@@ -185,7 +188,7 @@ gboolean update_progress_cb(gpointer data) {
             g_free(path);
             valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app_data->playlist_store), &iter);
         }
-        
+        //keepBTenabled();
         app_data->backend->play_file(app_data->next_song_path.c_str());
         return TRUE; // Return early
     }
@@ -691,7 +694,7 @@ int main(int argc, char* argv[]) {
     openLipcInstance();
     disableSleep();
     LipcGetIntProperty(lipcInstance,"com.lab126.powerd","flIntensity",&app_data.flIntensity);
-
+    keepBTenabled();
 
     // --- Main Window ---
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -709,7 +712,7 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_start(GTK_BOX(main_vbox), player_vbox, FALSE, FALSE, 0);
 
     // First line: Title Image
-    GdkPixbuf *title_pixbuf = gdk_pixbuf_new_from_inline(-1, title_christmas, FALSE, NULL);
+    GdkPixbuf *title_pixbuf = gdk_pixbuf_new_from_inline(-1, title_image, FALSE, NULL);
     GtkWidget *title_image = gtk_image_new_from_pixbuf(title_pixbuf);
     g_object_unref(title_pixbuf); // GtkImage takes a copy or ref? documentation says it takes a ref, but usually safe to unref if not needed else. 
     // Actually, create_from_pixbuf adds a ref. We should unref ours.

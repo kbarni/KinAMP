@@ -1,12 +1,12 @@
 /* GdkPixbuf RGB C-Source image dump 1-byte-run-length-encoded */
 
 #ifdef __SUNPRO_C
-#pragma align 4 (title_christmas)
+#pragma align 4 (title_image)
 #endif
 #ifdef __GNUC__
-static const guint8 title_christmas[] __attribute__ ((__aligned__ (4))) = 
+static const guint8 title_image[] __attribute__ ((__aligned__ (4))) = 
 #else
-static const guint8 title_christmas[] = 
+static const guint8 title_image[] = 
 #endif
 { ""
   /* Pixbuf magic (0x47646b50) */
