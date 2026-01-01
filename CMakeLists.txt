@@ -18,7 +18,6 @@ add_subdirectory(miniaudio)
 add_executable(${PROJECT_NAME}
     music_player.cpp
     music_backend.cpp
-    gtk_utils.cpp
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -30,6 +29,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     gthread-2.0
     lipc
     dl
+    rt
 )
 
 add_executable(KinAMP-minimal
@@ -44,6 +44,7 @@ target_link_libraries(KinAMP-minimal PRIVATE
     Threads::Threads
     miniaudio
     dl
+    rt
 )
 
 target_include_directories(KinAMP-minimal PRIVATE

@@ -12,7 +12,6 @@
 
 #include "openlipc/openlipc.h"
 
-#include "gtk_utils.h"
 #include "music_backend.h"
 #include "assets/bluetooth_icon.h"
 #include "assets/close_icon.h"
@@ -28,6 +27,20 @@
 #include "assets/sunny_icon.h"
 #include "assets/standby_icon.h"
 #include "assets/display_icon.h"
+#include "assets/bluetooth_icon-lr.h"
+#include "assets/close_icon-lr.h"
+#include "assets/play_pause_icon-lr.h"
+#include "assets/skip_next_icon-lr.h"
+#include "assets/skip_previous_icon-lr.h"
+#include "assets/stop_icon-lr.h"
+#include "assets/title-lr.h"
+#include "assets/shuffle_icon-lr.h"
+#include "assets/repeat_icon-lr.h"
+#include "assets/shuffle_on_icon-lr.h"
+#include "assets/repeat_on_icon-lr.h"
+#include "assets/sunny_icon-lr.h"
+#include "assets/standby_icon-lr.h"
+#include "assets/display_icon-lr.h"
 
 enum PlaybackStrategy {
     NORMAL,
@@ -41,6 +54,8 @@ struct AppData {
     GtkTreeView *playlist_treeview;
     GtkLabel *song_title_label;
     GtkLabel *time_label;
+
+    bool is_hires;
 
     PlaybackStrategy current_strategy;
     int flIntensity;
@@ -84,6 +99,16 @@ void toggleFrontLight(AppData *ad){
         ad->flIntensity=intensity;
         LipcSetIntProperty(lipcInstance,"com.lab126.powerd","flIntensity",0);
     }
+}
+
+GtkWidget* create_button_from_icon(const guint8* icon_data, int padding) {
+    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_inline(-1, icon_data, FALSE, NULL);
+    GtkWidget *image = gtk_image_new_from_pixbuf(pixbuf);
+    GtkWidget *button = gtk_button_new();
+    gtk_button_set_image(GTK_BUTTON(button), image);
+    gtk_container_set_border_width(GTK_CONTAINER(button), padding);
+    g_object_unref(pixbuf);
+    return button;
 }
 
 void set_button_icon(GtkWidget *button, const unsigned char *icon_data) {
@@ -325,14 +350,14 @@ void load_state(AppData *app_data) {
                 app_data->current_strategy = (PlaybackStrategy)strategy;
                 fwprintf(stderr, L"Loaded playback_strategy=%d\n",strategy);
                 if (app_data->current_strategy == RANDOM) {
-                    set_button_icon(app_data->shuffle_button, shuffle_on_icon);
-                    set_button_icon(app_data->repeat_button, repeat_icon);
+                    set_button_icon(app_data->shuffle_button, app_data->is_hires ? shuffle_on_icon : shuffle_on_icon_lr);
+                    set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_icon : repeat_icon_lr);
                 } else if (app_data->current_strategy == REPEAT) {
-                    set_button_icon(app_data->shuffle_button, shuffle_icon);
-                    set_button_icon(app_data->repeat_button, repeat_on_icon);
+                    set_button_icon(app_data->shuffle_button, app_data->is_hires ? shuffle_icon : shuffle_icon_lr);
+                    set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_on_icon : repeat_on_icon_lr);
                 } else {
-                    set_button_icon(app_data->shuffle_button, shuffle_icon);
-                    set_button_icon(app_data->repeat_button, repeat_icon);
+                    set_button_icon(app_data->shuffle_button, app_data->is_hires ? shuffle_icon : shuffle_icon_lr);
+                    set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_icon : repeat_icon_lr);
                 }
             }
         }
@@ -499,12 +524,12 @@ void on_shuffle_clicked(GtkWidget *widget, gpointer data) {
     AppData *app_data = (AppData*)data;
     if (app_data->current_strategy == RANDOM) {
         app_data->current_strategy = NORMAL;
-        set_button_icon(widget, shuffle_icon);
+        set_button_icon(widget, app_data->is_hires ? shuffle_icon : shuffle_icon_lr);
     } else {
         app_data->current_strategy = RANDOM;
-        set_button_icon(widget, shuffle_on_icon);
+        set_button_icon(widget, app_data->is_hires ? shuffle_on_icon : shuffle_on_icon_lr);
         // Turn off repeat
-        set_button_icon(app_data->repeat_button, repeat_icon);
+        set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_icon : repeat_icon_lr);
     }
     g_print("Shuffle mode toggled. New strategy: %d\n", app_data->current_strategy);
 }
@@ -513,12 +538,12 @@ void on_repeat_clicked(GtkWidget *widget, gpointer data) {
     AppData *app_data = (AppData*)data;
     if (app_data->current_strategy == REPEAT) {
         app_data->current_strategy = NORMAL;
-        set_button_icon(widget, repeat_icon);
+        set_button_icon(widget, app_data->is_hires ? repeat_icon : repeat_icon_lr);
     } else {
         app_data->current_strategy = REPEAT;
-        set_button_icon(widget, repeat_on_icon);
+        set_button_icon(widget, app_data->is_hires ? repeat_on_icon : repeat_on_icon_lr);
         // Turn off shuffle
-        set_button_icon(app_data->shuffle_button, shuffle_icon);
+        set_button_icon(app_data->shuffle_button, app_data->is_hires ? shuffle_icon : shuffle_icon_lr);
     }
     g_print("Repeat mode toggled. New strategy: %d\n", app_data->current_strategy);
 }
@@ -684,6 +709,13 @@ int main(int argc, char* argv[]) {
     // --- App Data ---
     MusicBackend backend;
     AppData app_data;
+
+    GdkScreen *screen = gdk_screen_get_default();
+    gint width = gdk_screen_get_width(screen);
+    gint height = gdk_screen_get_height(screen);
+    app_data.is_hires = (width >= 1000);
+    g_print("Detected resolution: %dx%d, using %s mode\n", width, height, (app_data.is_hires?"High res":"Low res"));
+
     app_data.backend = &backend;
     app_data.current_strategy = NORMAL;
     app_data.next_song_pending = false;
@@ -715,13 +747,13 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_start(GTK_BOX(main_vbox), player_vbox, FALSE, FALSE, 0);
 
     // First line: Title Image
-    GdkPixbuf *title_pixbuf = gdk_pixbuf_new_from_inline(-1, title_image, FALSE, NULL);
-    GtkWidget *title_image = gtk_image_new_from_pixbuf(title_pixbuf);
+    GdkPixbuf *title_pixbuf = gdk_pixbuf_new_from_inline(-1, app_data.is_hires ? title_image : title_image_lr, FALSE, NULL);
+    GtkWidget *title_image_widget = gtk_image_new_from_pixbuf(title_pixbuf);
     g_object_unref(title_pixbuf);
 
     // Center the title image
     GtkWidget *title_alignment = gtk_alignment_new(0.5, 0.5, 0, 0);
-    gtk_container_add(GTK_CONTAINER(title_alignment), title_image);
+    gtk_container_add(GTK_CONTAINER(title_alignment), title_image_widget);
     gtk_box_pack_start(GTK_BOX(player_vbox), title_alignment, FALSE, FALSE, 0);
 
     // Time and Song Title
@@ -731,7 +763,7 @@ int main(int argc, char* argv[]) {
     // Time Label
     GtkWidget *time_label = gtk_label_new("▢--:--");
     app_data.time_label = GTK_LABEL(time_label);
-    set_label_font(time_label, "Mono Bold 20");
+    set_label_font(time_label, app_data.is_hires ? "Mono Bold 20" : "Mono Bold 10");
     GtkWidget *time_frame = gtk_frame_new(NULL);
     gtk_container_add(GTK_CONTAINER(time_frame), time_label);
     gtk_box_pack_start(GTK_BOX(info_hbox), time_frame, FALSE, FALSE, 0);
@@ -739,33 +771,35 @@ int main(int argc, char* argv[]) {
     // Song Title Label
     GtkWidget *song_title_label = gtk_label_new("No song playing");
     app_data.song_title_label = GTK_LABEL(song_title_label);
-    set_label_font(song_title_label, "Sans 14");
+    set_label_font(song_title_label, app_data.is_hires ? "Sans 14" : "Sans 10");
     gtk_box_pack_start(GTK_BOX(info_hbox), song_title_label, TRUE, TRUE, 0);
 
     // Separator line (replaces progress bar)
     GtkWidget *separator = gtk_hseparator_new();
-    gtk_widget_set_size_request(separator, -1, 10); // Give it some vertical space
+    gtk_widget_set_size_request(separator, -1, app_data.is_hires ? 10 : 5); // Give it some vertical space
     gtk_box_pack_start(GTK_BOX(player_vbox), separator, FALSE, FALSE, 5);
 
     // Control Buttons
     GtkWidget *controls_hbox = gtk_hbox_new(FALSE, 2); 
     gtk_box_pack_start(GTK_BOX(player_vbox), controls_hbox, FALSE, FALSE, 0);
 
-    GtkWidget *prev_button = create_button_from_icon(skip_previous_icon, 72, 72, 5);
-    GtkWidget *play_button = create_button_from_icon(play_pause_icon, 72, 72, 5);
-    GtkWidget *stop_button = create_button_from_icon(stop_icon, 72, 72, 5);
-    GtkWidget *next_button = create_button_from_icon(skip_next_icon, 72, 72, 5);
+    int btn_padding = app_data.is_hires ? 5 : 2;
+
+    GtkWidget *prev_button = create_button_from_icon(app_data.is_hires ? skip_previous_icon : skip_previous_icon_lr, btn_padding);
+    GtkWidget *play_button = create_button_from_icon(app_data.is_hires ? play_pause_icon : play_pause_icon_lr, btn_padding);
+    GtkWidget *stop_button = create_button_from_icon(app_data.is_hires ? stop_icon : stop_icon_lr, btn_padding);
+    GtkWidget *next_button = create_button_from_icon(app_data.is_hires ? skip_next_icon : skip_next_icon_lr, btn_padding);
     
-    GtkWidget *shuffle_button = create_button_from_icon(shuffle_icon, 72, 72, 5);
+    GtkWidget *shuffle_button = create_button_from_icon(app_data.is_hires ? shuffle_icon : shuffle_icon_lr, btn_padding);
     app_data.shuffle_button = shuffle_button;
-    GtkWidget *repeat_button = create_button_from_icon(repeat_icon, 72, 72, 5);
+    GtkWidget *repeat_button = create_button_from_icon(app_data.is_hires ? repeat_icon : repeat_icon_lr, btn_padding);
     app_data.repeat_button = repeat_button;
 
-    GtkWidget *dispupdate_button = create_button_from_icon(display_icon, 72, 72, 5);
-    GtkWidget *frontlight_button = create_button_from_icon(sunny_icon, 72, 72, 5);
-    GtkWidget *bluetooth_button = create_button_from_icon(bluetooth_icon, 72, 72, 5);
-    GtkWidget *background_button = create_button_from_icon(standby_icon, 72, 72, 5);
-    GtkWidget *close_button = create_button_from_icon(close_icon, 72, 72, 5);
+    GtkWidget *dispupdate_button = create_button_from_icon(app_data.is_hires ? display_icon : display_icon_lr, btn_padding);
+    GtkWidget *frontlight_button = create_button_from_icon(app_data.is_hires ? sunny_icon : sunny_icon_lr, btn_padding);
+    GtkWidget *bluetooth_button = create_button_from_icon(app_data.is_hires ? bluetooth_icon : bluetooth_icon_lr, btn_padding);
+    GtkWidget *background_button = create_button_from_icon(app_data.is_hires ? standby_icon : standby_icon_lr, btn_padding);
+    GtkWidget *close_button = create_button_from_icon(app_data.is_hires ? close_icon : close_icon_lr, btn_padding);
 
     g_signal_connect(prev_button, "clicked", G_CALLBACK(on_previous_clicked), &app_data);
     g_signal_connect(play_button, "clicked", G_CALLBACK(on_play_pause_clicked), &app_data);
