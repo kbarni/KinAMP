@@ -17,12 +17,7 @@
 
 const char* PIPE_PATH = "/tmp/kinamp_audio_pipe";
 
-// =================================================================================
-// Decoder Implementation
-// =================================================================================
-
 Decoder::Decoder() : stop_flag(false), running(false), thread_id(0) {
-    // Ensure pipe exists
     unlink(PIPE_PATH);
     if (mkfifo(PIPE_PATH, 0666) == -1) {
         perror("Decoder: Failed to create named pipe");
@@ -54,13 +49,8 @@ bool Decoder::start(const char* filepath) {
 void Decoder::stop() {
     if (!running) return;
 
-    // Signal stop
     stop_flag = true;
 
-    // We assume the caller (MusicBackend) has already broken the pipe 
-    // by setting GStreamer state to NULL. This unblocks the write().
-    
-    // Wait for thread
     if (thread_id != 0) {
         pthread_join(thread_id, NULL);
         thread_id = 0;
@@ -105,7 +95,6 @@ void Decoder::decode_loop() {
         result = ma_decoder_read_pcm_frames(&decoder, pcm_buffer.data(), BUFFER_SIZE / decoder.outputChannels, &frames_read);
         
         if (result != MA_SUCCESS || frames_read == 0) {
-            // End of file or error
             break;
         }
 
@@ -114,7 +103,6 @@ void Decoder::decode_loop() {
 
         if (written == -1) {
             if (errno == EPIPE) {
-                // Reader closed pipe, expected during stop
                 break;
             }
             perror("Decoder: write error");
@@ -128,15 +116,10 @@ void Decoder::decode_loop() {
 }
 
 
-// =================================================================================
-// MusicBackend Implementation
-// =================================================================================
-
 MusicBackend::MusicBackend() 
     : is_playing(false), is_paused(false), pipeline(NULL), bus(NULL), bus_watch_id(0),
       stopping(false), on_eos_callback(NULL), eos_user_data(NULL), last_position(0)
 {
-    // Ignore SIGPIPE globally for this process
     signal(SIGPIPE, SIG_IGN);
     
     gst_init(NULL, NULL);
@@ -192,11 +175,8 @@ gint64 MusicBackend::get_position() {
 }
 
 void MusicBackend::play_file(const char* filepath) {
-    if (stopping) return; // Prevent play if busy stopping
+    if (stopping) return; 
 
-    // If already playing, stop first.
-    // Note: This calls our synchronous stop(), which waits for the decoder thread.
-    // If this takes too long, it might freeze UI briefly.
     if (is_playing || is_paused) {
         stop();
     }
@@ -207,8 +187,6 @@ void MusicBackend::play_file(const char* filepath) {
     is_paused = false;
     last_position = 0;
 
-    // 1. Create Pipeline
-    // filesrc reads from named pipe
     gchar *pipeline_desc = g_strdup_printf(
         "filesrc location=\"%s\" ! audio/x-raw-int, endianness=1234, signed=true, width=16, depth=16, rate=44100, channels=2 ! queue ! mixersink",
         PIPE_PATH
@@ -222,23 +200,15 @@ void MusicBackend::play_file(const char* filepath) {
         return;
     }
 
-    // 2. Setup Bus
     bus = gst_element_get_bus(pipeline);
     bus_watch_id = gst_bus_add_watch(bus, bus_callback_func, this);
     gst_object_unref(bus);
 
-    // 3. Start Decoder Thread
-    // We must start decoder BEFORE setting pipeline to playing? 
-    // Or AFTER?
-    // If we start decoder first, it opens pipe and blocks on write (or open).
-    // If we start pipeline first, it opens pipe and blocks on read (or open).
-    // Order doesn't strictly matter as long as both happen.
     if (!decoder->start(filepath)) {
         cleanup_pipeline();
         return;
     }
 
-    // 4. Start Pipeline
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
 }
 
@@ -259,18 +229,12 @@ void MusicBackend::stop() {
     if (stopping) return;
     stopping = true;
 
-    // 1. Break the pipe connection.
-    // Setting pipeline to NULL closes the file descriptor in filesrc.
-    // This causes the writer (Decoder) to receive EPIPE on next write.
     if (pipeline) {
         gst_element_set_state(pipeline, GST_STATE_NULL);
     }
 
-    // 2. Stop Decoder
-    // This joins the thread. It should return quickly now that pipe is broken.
     decoder->stop();
 
-    // 3. Cleanup GStreamer
     cleanup_pipeline();
     
     stopping = false;
@@ -296,13 +260,6 @@ gboolean MusicBackend::bus_callback_func(GstBus *bus, GstMessage *msg, gpointer 
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_EOS:
             g_print("Backend: EOS reached.\n");
-            // Important: Don't call stop() directly here if it joins threads,
-            // as we are in the GMainLoop context (UI thread usually).
-            // Actually, we are fine to call callbacks.
-            // But we should stop the playback components.
-            
-            // To be safe and avoid blocking the loop too long, we might want to defer,
-            // but for now, let's keep it simple.
             self->stop(); 
 
             if (self->on_eos_callback) {

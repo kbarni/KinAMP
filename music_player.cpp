@@ -62,7 +62,7 @@ struct AppData {
     bool next_song_pending;
     bool dispUpdate;
     std::string next_song_path;
-    std::string last_title; // Cache to avoid redundant UI updates
+    std::string last_title;
     int current_index;
     GtkWidget *shuffle_button;
     GtkWidget *repeat_button;
@@ -116,10 +116,9 @@ void set_button_icon(GtkWidget *button, const unsigned char *icon_data) {
     GtkWidget *image = gtk_image_new_from_pixbuf(pixbuf);
     g_object_unref(pixbuf);
     gtk_button_set_image(GTK_BUTTON(button), image);
-    gtk_widget_show(image); // Important to show the new image
+    gtk_widget_show(image);
 }
 
-// --- End of Stream Callback ---
 void on_eos_cb(void* user_data) {
     g_print("UI: End-of-Stream reached. Planning next song.\n");
     AppData *app_data = (AppData*)user_data;
@@ -186,11 +185,9 @@ void on_eos_cb(void* user_data) {
 }
 
 
-// --- UI Update Callback ---
 gboolean update_progress_cb(gpointer data) {
     AppData *app_data = (AppData*)data;
 
-    // Handle playing the next song if pending
     if (app_data->next_song_pending && !app_data->backend->is_playing && !app_data->backend->is_shutting_down()) {
         app_data->next_song_pending = false;
         
@@ -199,7 +196,6 @@ gboolean update_progress_cb(gpointer data) {
         while (valid) {
             gchar *path = NULL;
             gtk_tree_model_get(GTK_TREE_MODEL(app_data->playlist_store), &iter, 0, &path, -1);
-            // Use std::string comparison
             if (path && app_data->next_song_path == path) {
                 GtkTreePath* tree_path = gtk_tree_model_get_path(GTK_TREE_MODEL(app_data->playlist_store), &iter);
                 gtk_tree_view_set_cursor(app_data->playlist_treeview, tree_path, NULL, FALSE);
@@ -210,9 +206,8 @@ gboolean update_progress_cb(gpointer data) {
             g_free(path);
             valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app_data->playlist_store), &iter);
         }
-        //keepBTenabled();
         app_data->backend->play_file(app_data->next_song_path.c_str());
-        return TRUE; // Return early
+        return TRUE;
     }
 
 
@@ -229,21 +224,19 @@ gboolean update_progress_cb(gpointer data) {
         }
         gtk_label_set_text(app_data->time_label, time_str);
         
-        // Update title only if it changes
         const char* full_path = app_data->backend->get_current_filepath();
         if (full_path && strlen(full_path) > 0) {
             char* path_copy = g_strdup(full_path);
-            char* base = basename(path_copy); // basename might modify path_copy
+            char* base = basename(path_copy);
             
             if (app_data->last_title != base) {
                 gtk_label_set_text(app_data->song_title_label, base);
-                app_data->last_title = base; // Update cache
+                app_data->last_title = base;
             }
             g_free(path_copy);
         }
 
     } else {
-        // Stopped state
         gtk_label_set_text(app_data->time_label, "▢--:--");
         if (app_data->last_title != "No song playing") {
             gtk_label_set_text(app_data->song_title_label, "No song playing");
@@ -251,11 +244,10 @@ gboolean update_progress_cb(gpointer data) {
         }
     }
 
-    return TRUE; // Continue calling this function
+    return TRUE;
 }
 
 
-// --- Helper to get config file path ---
 std::string get_config_path(const char* filename) {
     std::string path;
     wordexp_t p;
@@ -269,14 +261,12 @@ std::string get_config_path(const char* filename) {
     } 
     
     if (path.empty()) {
-        // Fallback to current directory
         path = filename;
     }
     return path;
 }
 
 
-// --- State Management ---
 void save_state(AppData *app_data) {
     std::string playlist_path = get_config_path(".kinamp_playlist.m3u");
     std::ofstream outfile(playlist_path.c_str());
@@ -373,14 +363,12 @@ void load_state(AppData *app_data) {
 }
 
 
-// --- Function to set font for a label ---
 void set_label_font(GtkWidget *label, const char *font_desc_str) {
     PangoFontDescription *font_desc = pango_font_description_from_string(font_desc_str);
     gtk_widget_modify_font(label, font_desc);
     pango_font_description_free(font_desc);
 }
 
-// --- Helper function to recursively add files from a directory ---
 void add_directory_to_playlist(const char *dir_path, GtkListStore *playlist_store) {
     DIR *dir = opendir(dir_path);
     if (dir == NULL) {
@@ -414,7 +402,6 @@ void add_directory_to_playlist(const char *dir_path, GtkListStore *playlist_stor
     }
 }
 
-// --- Playback Controls ---
 void play_selected_song(AppData* app_data) {
     GtkTreeSelection *selection = gtk_tree_view_get_selection(app_data->playlist_treeview);
     GtkTreeIter iter;
@@ -425,12 +412,11 @@ void play_selected_song(AppData* app_data) {
         gtk_tree_model_get(model, &iter, 0, &file_path, -1);
         if (file_path) {
             app_data->backend->play_file(file_path);
-            // Update title immediately on play
             char* path_copy = g_strdup(file_path);
             char* base = basename(path_copy);
             gtk_label_set_text(app_data->song_title_label, base);
 
-            app_data->last_title = base; // Update cache
+            app_data->last_title = base;
             
             g_free(path_copy);
             g_free(file_path);
@@ -485,9 +471,8 @@ void on_next_clicked(GtkWidget *widget, gpointer data) {
     GtkTreeIter iter;
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
         GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
-        gtk_tree_path_next(path); // Move to the next path
+        gtk_tree_path_next(path);
         
-        // Check if the path is valid before using it
         if (gtk_tree_model_get_iter(model, &iter, path)) {
             gtk_tree_view_set_cursor(GTK_TREE_VIEW(app_data->playlist_treeview), path, NULL, FALSE);
             play_selected_song(app_data);
@@ -505,7 +490,7 @@ void on_background_clicked(GtkWidget *widget, gpointer data) {
     save_state(app_data);
     app_data->backend->stop();
     gtk_main_quit();
-    exit(10); // Special exit code to signal background mode
+    exit(10);
 }
 
 void on_close_clicked(GtkWidget *widget, gpointer data) {
@@ -528,7 +513,6 @@ void on_shuffle_clicked(GtkWidget *widget, gpointer data) {
     } else {
         app_data->current_strategy = RANDOM;
         set_button_icon(widget, app_data->is_hires ? shuffle_on_icon : shuffle_on_icon_lr);
-        // Turn off repeat
         set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_icon : repeat_icon_lr);
     }
     g_print("Shuffle mode toggled. New strategy: %d\n", app_data->current_strategy);
@@ -542,7 +526,6 @@ void on_repeat_clicked(GtkWidget *widget, gpointer data) {
     } else {
         app_data->current_strategy = REPEAT;
         set_button_icon(widget, app_data->is_hires ? repeat_on_icon : repeat_on_icon_lr);
-        // Turn off shuffle
         set_button_icon(app_data->shuffle_button, app_data->is_hires ? shuffle_icon : shuffle_icon_lr);
     }
     g_print("Repeat mode toggled. New strategy: %d\n", app_data->current_strategy);
@@ -567,7 +550,6 @@ void on_displayUpdate_clicked(GtkWidget *widget, gpointer data) {
     app_data->dispUpdate = !(app_data->dispUpdate);
 }
 
-// --- Playlist Management Callbacks ---
 void on_add_file_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
     AppData *app_data = (AppData*)data;
@@ -706,7 +688,6 @@ void on_load_clicked(GtkWidget *widget, gpointer data) {
 int main(int argc, char* argv[]) {
     gtk_init(&argc, &argv);
 
-    // --- App Data ---
     MusicBackend backend;
     AppData app_data;
 
@@ -731,36 +712,29 @@ int main(int argc, char* argv[]) {
     LipcSetIntProperty(lipcInstance,"com.lab126.btfd","ensureBTconnection",1);
     LipcSetStringProperty(lipcInstance,"com.lab126.btfd","BTenable","1:1");
 
-    // --- Main Window ---
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(window), 600, 400);
     gtk_window_set_title(GTK_WINDOW(window), "L:A_N:application_PC:T_ID:com.kbarni.kinamp");
     g_signal_connect(window, "destroy", G_CALLBACK(on_close_clicked), &app_data);
 
-    // --- Main Vertical Box ---
-    GtkWidget *main_vbox = gtk_vbox_new(FALSE, 10); // Increased spacing
-    gtk_container_set_border_width(GTK_CONTAINER(main_vbox), 20); // Add margins
+    GtkWidget *main_vbox = gtk_vbox_new(FALSE, 10);
+    gtk_container_set_border_width(GTK_CONTAINER(main_vbox), 20);
     gtk_container_add(GTK_CONTAINER(window), main_vbox);
 
-    // --- Player Section ---
     GtkWidget *player_vbox = gtk_vbox_new(FALSE, 5);
     gtk_box_pack_start(GTK_BOX(main_vbox), player_vbox, FALSE, FALSE, 0);
 
-    // First line: Title Image
     GdkPixbuf *title_pixbuf = gdk_pixbuf_new_from_inline(-1, app_data.is_hires ? title_image : title_image_lr, FALSE, NULL);
     GtkWidget *title_image_widget = gtk_image_new_from_pixbuf(title_pixbuf);
     g_object_unref(title_pixbuf);
 
-    // Center the title image
     GtkWidget *title_alignment = gtk_alignment_new(0.5, 0.5, 0, 0);
     gtk_container_add(GTK_CONTAINER(title_alignment), title_image_widget);
     gtk_box_pack_start(GTK_BOX(player_vbox), title_alignment, FALSE, FALSE, 0);
 
-    // Time and Song Title
     GtkWidget *info_hbox = gtk_hbox_new(FALSE, 5);
     gtk_box_pack_start(GTK_BOX(player_vbox), info_hbox, FALSE, FALSE, 0);
 
-    // Time Label
     GtkWidget *time_label = gtk_label_new("▢--:--");
     app_data.time_label = GTK_LABEL(time_label);
     set_label_font(time_label, app_data.is_hires ? "Mono Bold 20" : "Mono Bold 10");
@@ -768,18 +742,15 @@ int main(int argc, char* argv[]) {
     gtk_container_add(GTK_CONTAINER(time_frame), time_label);
     gtk_box_pack_start(GTK_BOX(info_hbox), time_frame, FALSE, FALSE, 0);
 
-    // Song Title Label
     GtkWidget *song_title_label = gtk_label_new("No song playing");
     app_data.song_title_label = GTK_LABEL(song_title_label);
     set_label_font(song_title_label, app_data.is_hires ? "Sans 14" : "Sans 10");
     gtk_box_pack_start(GTK_BOX(info_hbox), song_title_label, TRUE, TRUE, 0);
 
-    // Separator line (replaces progress bar)
     GtkWidget *separator = gtk_hseparator_new();
-    gtk_widget_set_size_request(separator, -1, app_data.is_hires ? 10 : 5); // Give it some vertical space
+    gtk_widget_set_size_request(separator, -1, app_data.is_hires ? 10 : 5);
     gtk_box_pack_start(GTK_BOX(player_vbox), separator, FALSE, FALSE, 5);
 
-    // Control Buttons
     GtkWidget *controls_hbox = gtk_hbox_new(FALSE, 2); 
     gtk_box_pack_start(GTK_BOX(player_vbox), controls_hbox, FALSE, FALSE, 0);
 
@@ -815,27 +786,22 @@ int main(int argc, char* argv[]) {
     g_signal_connect(background_button, "clicked", G_CALLBACK(on_background_clicked), &app_data);
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), &app_data);
 
-    // Pack buttons
     gtk_box_pack_start(GTK_BOX(controls_hbox), prev_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls_hbox), play_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls_hbox), stop_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls_hbox), next_button, FALSE, FALSE, 0);
     
-    // Spacer
     GtkWidget *spacer1 = gtk_label_new("");
     gtk_box_pack_start(GTK_BOX(controls_hbox), spacer1, TRUE, TRUE, 0);
     
-    // Center buttons
     GtkWidget *center_hbox = gtk_hbox_new(FALSE, 2);
     gtk_box_pack_start(GTK_BOX(center_hbox), shuffle_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(center_hbox), repeat_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls_hbox), center_hbox, FALSE, FALSE, 0);
     
-    // Spacer
     GtkWidget *spacer2 = gtk_label_new("");
     gtk_box_pack_start(GTK_BOX(controls_hbox), spacer2, TRUE, TRUE, 0);
 
-    // Right aligned section (Bluetooth + Close)
     GtkWidget *right_controls_hbox = gtk_hbox_new(FALSE, 2);
     gtk_box_pack_start(GTK_BOX(right_controls_hbox), dispupdate_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_controls_hbox), frontlight_button, FALSE, FALSE, 0);
@@ -845,7 +811,6 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_start(GTK_BOX(controls_hbox), right_controls_hbox, FALSE, FALSE, 0);
 
 
-    // --- Playlist Section ---
     GtkWidget *playlist_label = gtk_label_new("<b>Playlist</b>"); 
     gtk_label_set_use_markup(GTK_LABEL(playlist_label), TRUE);
     gtk_box_pack_start(GTK_BOX(main_vbox), playlist_label, FALSE, FALSE, 5); 
@@ -869,8 +834,7 @@ int main(int argc, char* argv[]) {
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_treeview), column);
 
 
-    // --- Playlist Management Buttons ---
-    GtkWidget *playlist_buttons_hbox = gtk_hbox_new(FALSE, 10); // Increased spacing
+    GtkWidget *playlist_buttons_hbox = gtk_hbox_new(FALSE, 10);
     gtk_box_pack_start(GTK_BOX(main_vbox), playlist_buttons_hbox, FALSE, FALSE, 5);
 
     GtkWidget *add_file_button = gtk_button_new_with_label("Add file");
@@ -894,7 +858,6 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_start(GTK_BOX(playlist_buttons_hbox), add_folder_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(playlist_buttons_hbox), clear_playlist_button, FALSE, FALSE, 0);
 
-    // Align Save and Load buttons to the right
     GtkWidget *align_save_load = gtk_alignment_new(1, 0.5, 0, 0);
     GtkWidget *save_load_hbox = gtk_hbox_new(FALSE, 5);
     gtk_box_pack_start(GTK_BOX(save_load_hbox), save_button, FALSE, FALSE, 0);
@@ -903,7 +866,6 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_start(GTK_BOX(playlist_buttons_hbox), align_save_load, TRUE, TRUE, 0);
 
 
-    // --- Load State and Show Window ---
     load_state(&app_data);
     g_timeout_add(500, update_progress_cb, &app_data);
     gtk_widget_show_all(window);
