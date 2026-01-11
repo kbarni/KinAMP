@@ -47,7 +47,7 @@ Install the kox toolchain, clone the GIT repo and adapt it to your paths in the 
 
 ```
 git clone --recurse-submodules https://github.com/kbarni/KinAMP
-cd kinamp
+cd Kinamp
 mkdir build
 cd build
 cmake .. -DCMAKE_TOOLCHAIN_FILE=armhf-toolchain.cmake
