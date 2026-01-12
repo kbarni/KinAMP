@@ -104,9 +104,12 @@ void toggleFrontLight(AppData *ad){
 GtkWidget* create_button_from_icon(const guint8* icon_data, int padding) {
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_inline(-1, icon_data, FALSE, NULL);
     GtkWidget *image = gtk_image_new_from_pixbuf(pixbuf);
+    
     GtkWidget *button = gtk_button_new();
     gtk_button_set_image(GTK_BUTTON(button), image);
-    gtk_container_set_border_width(GTK_CONTAINER(button), padding);
+    gtk_button_set_relief(GTK_BUTTON(button), GTK_RELIEF_NONE);
+    gtk_misc_set_padding(GTK_MISC(image), padding, padding);
+
     g_object_unref(pixbuf);
     return button;
 }

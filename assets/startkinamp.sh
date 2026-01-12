@@ -12,33 +12,36 @@ alert() {
     TITLE_ESC=$(printf '%s' "$TITLE" | sed 's/"/\\"/g')
     TEXT_ESC=$(printf '%s' "$TEXT" | sed 's/"/\\"/g')
 
-    JSON='{ "clientParams":{ "alertId":"KinAMP", "show":true, "customStrings":[ { "matchStr":"alertTitle", "replaceStr":"'"$TITLE_ESC"'" }, { "matchStr":"alertText", "replaceStr":"'"$TEXT_ESC"'" } ] } }'
+    JSON='{ "clientParams":{ "alertId":"appAlert1", "show":true, "customStrings":[ { "matchStr":"alertTitle", "replaceStr":"'"$TITLE_ESC"'" }, { "matchStr":"alertText", "replaceStr":"'"$TEXT_ESC"'" } ] } }'
 
     lipc-set-prop com.lab126.pillow pillowAlert "$JSON"
 }
 
+KINAMP=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP" || echo "KinAMP-armel")
+KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "KinAMP-minimal-armel") 
+
 # Check if KinAMP is running in background
-if is_process_running "KinAMP-minimal"; then
+if is_process_running $KINAMPMIN; then
     echo "Kinamp is running in background. Stopping it..."
-    pkill "KinAMP-minimal"
+    pkill $KINAMPMIN
     sleep 2
-    if is_process_running "KinAMP-minimal"; then
+    if is_process_running $KINAMPMIN; then
         echo "Process didn't terminate gracefully. Force killing..."
-        pkill -9 "KinAMP_minimal"
+        pkill -9 $KINAMPMIN
     fi
     alert "KinAMP","Background music playback stopped"
 else
     echo "Starting KinAMP GUI..."
     lipc-set-prop -s com.lab126.btfd BTenable 0:1
     sleep 1
-    cd /nmt/us/KinAMP
-    ./KinAMP
+    cd /mnt/us/KinAMP
+    ./$KINAMP
     exit_code=$?
     
     # Check if exit code is 10
     if [ $exit_code -eq 10 ]; then
         # Pillow dialog
-        alert "KinAMP","Continuing playing music in background.<br/>Click the KinAMP booklet again to stop."
-        ./KinAMP-minimal &
+        alert "KinAMP","Continuing playing music in background. Click the KinAMP booklet again to stop."
+        ./$KINAMPMIN &
     fi
 fi
