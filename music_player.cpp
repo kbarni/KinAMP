@@ -6,9 +6,9 @@
 #include <algorithm>
 #include <dirent.h>
 #include <stdlib.h>
-#include <wordexp.h>
 #include <libgen.h>
 #include <random>
+#include <sstream>
 
 #include "openlipc/openlipc.h"
 
@@ -51,11 +51,13 @@ enum PlaybackStrategy {
 struct AppData {
     MusicBackend *backend;
     GtkListStore *playlist_store;
+    GtkListStore *radio_store; 
     GtkTreeView *playlist_treeview;
     GtkLabel *song_title_label;
     GtkLabel *time_label;
 
     bool is_hires;
+    bool is_radio_mode;
 
     PlaybackStrategy current_strategy;
     int flIntensity;
@@ -66,6 +68,12 @@ struct AppData {
     int current_index;
     GtkWidget *shuffle_button;
     GtkWidget *repeat_button;
+    
+    GtkWidget *music_action_hbox;
+    GtkWidget *radio_action_hbox;
+    GtkWidget *switch_mode_button;
+    
+    GtkWidget *window;
 };
 
 static LIPC * lipcInstance = 0;
@@ -122,9 +130,47 @@ void set_button_icon(GtkWidget *button, const unsigned char *icon_data) {
     gtk_widget_show(image);
 }
 
-void on_eos_cb(void* user_data) {
-    g_print("UI: End-of-Stream reached. Planning next song.\n");
+struct ErrorPayload {
+    char* msg;
+    AppData* app_data;
+};
+
+gboolean show_error_dialog(gpointer data) {
+    ErrorPayload* payload = (ErrorPayload*)data;
+    
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(payload->app_data->window),
+                                           GTK_DIALOG_DESTROY_WITH_PARENT,
+                                           GTK_MESSAGE_ERROR,
+                                           GTK_BUTTONS_CLOSE,
+                                           "Error: %s",
+                                           payload->msg);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    
+    g_free(payload->msg);
+    delete payload;
+    return FALSE; // Remove from idle sources
+}
+
+void on_error_cb(const char* msg, void* user_data) {
     AppData *app_data = (AppData*)user_data;
+    ErrorPayload* payload = new ErrorPayload();
+    payload->msg = g_strdup(msg);
+    payload->app_data = app_data;
+    
+    g_idle_add(show_error_dialog, payload);
+}
+
+void on_eos_cb(void* user_data) {
+    AppData *app_data = (AppData*)user_data;
+
+    // EOS not relevant for Radio usually, or maybe handle reconnection?
+    if (app_data->is_radio_mode) {
+        g_print("UI: End-of-Stream in Radio mode. Stopping.\n");
+        return; 
+    }
+
+    g_print("UI: End-of-Stream reached. Planning next song.\n");
 
     GtkTreeModel *model = GTK_TREE_MODEL(app_data->playlist_store);
     GtkTreeSelection *selection = gtk_tree_view_get_selection(app_data->playlist_treeview);
@@ -220,23 +266,29 @@ gboolean update_progress_cb(gpointer data) {
         char time_str[32];
         int pos_seconds = position / GST_SECOND;
         
-        if (app_data->backend->is_paused) {
-             snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?"◫%02d:%02d":"  ◫  "), pos_seconds / 60, pos_seconds % 60);
+        if (app_data->is_radio_mode) {
+             snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?" ● LIVE ":"   ●   "));
         } else {
-             snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?"▷%02d:%02d":"  ▷  "), pos_seconds / 60, pos_seconds % 60);
+            if (app_data->backend->is_paused) {
+                snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?"◫%02d:%02d":"  ◫  "), pos_seconds / 60, pos_seconds % 60);
+            } else {
+                snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?"▷%02d:%02d":"  ▷  "), pos_seconds / 60, pos_seconds % 60);
+            }
         }
         gtk_label_set_text(app_data->time_label, time_str);
         
-        const char* full_path = app_data->backend->get_current_filepath();
-        if (full_path && strlen(full_path) > 0) {
-            char* path_copy = g_strdup(full_path);
-            char* base = basename(path_copy);
-            
-            if (app_data->last_title != base) {
-                gtk_label_set_text(app_data->song_title_label, base);
-                app_data->last_title = base;
+        if (!app_data->is_radio_mode) {
+            const char* full_path = app_data->backend->get_current_filepath();
+            if (full_path && strlen(full_path) > 0) {
+                char* path_copy = g_strdup(full_path);
+                char* base = basename(path_copy);
+                
+                if (app_data->last_title != base) {
+                    gtk_label_set_text(app_data->song_title_label, base);
+                    app_data->last_title = base;
+                }
+                g_free(path_copy);
             }
-            g_free(path_copy);
         }
 
     } else {
@@ -252,25 +304,13 @@ gboolean update_progress_cb(gpointer data) {
 
 
 std::string get_config_path(const char* filename) {
-    std::string path;
-    wordexp_t p;
-    if (wordexp("~", &p, 0) == 0) {
-        if (p.we_wordv[0]) {
-            path = p.we_wordv[0];
-            path += "/";
-            path += filename;
-        }
-        wordfree(&p);
-    } 
-    
-    if (path.empty()) {
-        path = filename;
-    }
-    return path;
+    return std::string(filename);
 }
 
 
 void save_state(AppData *app_data) {
+    // Only save music playlist if we are in music mode (or we should preserve it regardless)
+    // Actually, playlist is always in playlist_store, even if hidden.
     std::string playlist_path = get_config_path(".kinamp_playlist.m3u");
     std::ofstream outfile(playlist_path.c_str());
     if (outfile.is_open()) {
@@ -308,6 +348,7 @@ void save_state(AppData *app_data) {
     if (conffile.is_open()) {
         conffile << "current_index=" << current_index << std::endl;
         conffile << "playback_strategy=" << app_data->current_strategy << std::endl;
+        conffile << "is_radio_mode=" << (app_data->is_radio_mode ? 1 : 0) << std::endl;
         conffile.close();
     }
 }
@@ -336,12 +377,10 @@ void load_state(AppData *app_data) {
         while (std::getline(conffile, line)) {
             if (line.find("current_index=") == 0) {
                 current_index = atoi(line.substr(14).c_str());
-                fwprintf(stderr, L"Loaded current_index=%d\n",current_index);
             }
             if (line.find("playback_strategy=") == 0) {
                 int strategy = atoi(line.substr(18).c_str());
                 app_data->current_strategy = (PlaybackStrategy)strategy;
-                fwprintf(stderr, L"Loaded playback_strategy=%d\n",strategy);
                 if (app_data->current_strategy == RANDOM) {
                     set_button_icon(app_data->shuffle_button, app_data->is_hires ? shuffle_on_icon : shuffle_on_icon_lr);
                     set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_icon : repeat_icon_lr);
@@ -353,8 +392,18 @@ void load_state(AppData *app_data) {
                     set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_icon : repeat_icon_lr);
                 }
             }
+            if (line.find("is_radio_mode=") == 0) {
+                app_data->is_radio_mode = (atoi(line.substr(14).c_str()) != 0);
+            }
         }
         conffile.close();
+    }
+    
+    if (app_data->is_radio_mode) {
+        gtk_button_set_label(GTK_BUTTON(app_data->switch_mode_button), "Switch to music");
+        gtk_widget_hide(app_data->music_action_hbox);
+        gtk_widget_show(app_data->radio_action_hbox);
+        gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->radio_store));
     }
     if (current_index != -1) {
         GtkTreePath *path = gtk_tree_path_new_from_indices(current_index, -1);
@@ -362,6 +411,46 @@ void load_state(AppData *app_data) {
             gtk_tree_view_set_cursor(app_data->playlist_treeview, path, NULL, FALSE);
             gtk_tree_path_free(path);
         }
+    }
+}
+
+void load_radio_stations(AppData *app_data) {
+    std::string path = get_config_path(".kinamp_radio.txt");
+    std::ifstream infile(path.c_str());
+    gtk_list_store_clear(app_data->radio_store);
+    if (infile.is_open()) {
+        std::string line;
+        while (std::getline(infile, line)) {
+             size_t pos = line.find('|');
+             if (pos != std::string::npos) {
+                 std::string name = line.substr(0, pos);
+                 std::string url = line.substr(pos + 1);
+                 GtkTreeIter iter;
+                 gtk_list_store_append(app_data->radio_store, &iter);
+                 gtk_list_store_set(app_data->radio_store, &iter, 0, name.c_str(), 1, url.c_str(), -1);
+             }
+        }
+        infile.close();
+    }
+}
+
+void save_radio_stations(AppData *app_data) {
+    std::string path = get_config_path(".kinamp_radio.txt");
+    std::ofstream outfile(path.c_str());
+    if (outfile.is_open()) {
+        GtkTreeIter iter;
+        gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app_data->radio_store), &iter);
+        while (valid) {
+            gchar *name, *url;
+            gtk_tree_model_get(GTK_TREE_MODEL(app_data->radio_store), &iter, 0, &name, 1, &url, -1);
+            if (name && url) {
+                outfile << name << "|" << url << std::endl;
+            }
+            g_free(name);
+            g_free(url);
+            valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app_data->radio_store), &iter);
+        }
+        outfile.close();
     }
 }
 
@@ -411,18 +500,33 @@ void play_selected_song(AppData* app_data) {
     GtkTreeModel *model;
 
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        gchar *file_path = NULL;
-        gtk_tree_model_get(model, &iter, 0, &file_path, -1);
-        if (file_path) {
-            app_data->backend->play_file(file_path);
-            char* path_copy = g_strdup(file_path);
-            char* base = basename(path_copy);
-            gtk_label_set_text(app_data->song_title_label, base);
+        if (app_data->is_radio_mode) {
+             gchar *name = NULL;
+             gchar *url = NULL;
+             gtk_tree_model_get(model, &iter, 0, &name, 1, &url, -1);
+             if (url) {
+                 app_data->backend->play_file(url);
+                 if (name) {
+                     gtk_label_set_text(app_data->song_title_label, name);
+                     app_data->last_title = name;
+                 }
+                 g_free(name);
+                 g_free(url);
+             }
+        } else {
+            gchar *file_path = NULL;
+            gtk_tree_model_get(model, &iter, 0, &file_path, -1);
+            if (file_path) {
+                app_data->backend->play_file(file_path);
+                char* path_copy = g_strdup(file_path);
+                char* base = basename(path_copy);
+                gtk_label_set_text(app_data->song_title_label, base);
 
-            app_data->last_title = base;
-            
-            g_free(path_copy);
-            g_free(file_path);
+                app_data->last_title = base;
+                
+                g_free(path_copy);
+                g_free(file_path);
+            }
         }
     }
 }
@@ -493,7 +597,12 @@ void on_background_clicked(GtkWidget *widget, gpointer data) {
     save_state(app_data);
     app_data->backend->stop();
     gtk_main_quit();
-    exit(10);
+    if(app_data->is_radio_mode) {
+        exit(11);
+    } else {
+        exit(10);
+    }
+    
 }
 
 void on_close_clicked(GtkWidget *widget, gpointer data) {
@@ -687,6 +796,82 @@ void on_load_clicked(GtkWidget *widget, gpointer data) {
     gtk_widget_destroy(dialog);
 }
 
+void on_add_station_clicked(GtkWidget *widget, gpointer data) {
+    AppData *app_data = (AppData*)data;
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("L:A_N:Add Radio Station_PC:TS_ID:add_station",
+                                                    GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                    GTK_DIALOG_MODAL,
+                                                    GTK_STOCK_OK, GTK_RESPONSE_ACCEPT,
+                                                    GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
+                                                    NULL);
+
+    GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget *grid = gtk_table_new(2, 2, FALSE);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    gtk_container_add(GTK_CONTAINER(content_area), grid);
+
+    GtkWidget *name_label = gtk_label_new("Name:");
+    GtkWidget *url_label = gtk_label_new("URL:");
+    GtkWidget *name_entry = gtk_entry_new();
+    GtkWidget *url_entry = gtk_entry_new();
+
+    gtk_table_attach_defaults(GTK_TABLE(grid), name_label, 0, 1, 0, 1);
+    gtk_table_attach_defaults(GTK_TABLE(grid), name_entry, 1, 2, 0, 1);
+    gtk_table_attach_defaults(GTK_TABLE(grid), url_label, 0, 1, 1, 2);
+    gtk_table_attach_defaults(GTK_TABLE(grid), url_entry, 1, 2, 1, 2);
+
+    gtk_widget_show_all(grid);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        const char *name = gtk_entry_get_text(GTK_ENTRY(name_entry));
+        const char *url = gtk_entry_get_text(GTK_ENTRY(url_entry));
+        if (name && url && strlen(name) > 0 && strlen(url) > 0) {
+            GtkTreeIter iter;
+            gtk_list_store_append(app_data->radio_store, &iter);
+            gtk_list_store_set(app_data->radio_store, &iter, 0, name, 1, url, -1);
+            save_radio_stations(app_data);
+        }
+    }
+    gtk_widget_destroy(dialog);
+}
+
+void on_remove_station_clicked(GtkWidget *widget, gpointer data) {
+    (void)widget;
+    AppData *app_data = (AppData*)data;
+    GtkTreeSelection *selection = gtk_tree_view_get_selection(app_data->playlist_treeview);
+    GtkTreeIter iter;
+    GtkTreeModel *model;
+    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
+        gtk_list_store_remove(app_data->radio_store, &iter);
+        save_radio_stations(app_data);
+    }
+}
+
+void on_switch_mode_clicked(GtkWidget *widget, gpointer data) {
+    AppData *app_data = (AppData*)data;
+    app_data->backend->stop(); 
+
+    if (app_data->is_radio_mode) {
+        // Switch to Music
+        app_data->is_radio_mode = false;
+        gtk_button_set_label(GTK_BUTTON(app_data->switch_mode_button), "Switch to radio");
+        gtk_widget_show(app_data->music_action_hbox);
+        gtk_widget_hide(app_data->radio_action_hbox);
+        gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->playlist_store));
+        
+        save_radio_stations(app_data); 
+        // We could restore selection here if we saved it in AppData
+    } else {
+        // Switch to Radio
+        save_state(app_data); 
+        app_data->is_radio_mode = true;
+        gtk_button_set_label(GTK_BUTTON(app_data->switch_mode_button), "Switch to music");
+        gtk_widget_hide(app_data->music_action_hbox);
+        gtk_widget_show(app_data->radio_action_hbox);
+        gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->radio_store));
+    }
+}
+
 
 int main(int argc, char* argv[]) {
     gtk_init(&argc, &argv);
@@ -705,8 +890,10 @@ int main(int argc, char* argv[]) {
     app_data.next_song_pending = false;
     app_data.flIntensity = 0;
     app_data.dispUpdate=true;
+    app_data.is_radio_mode = false;
 
     backend.set_eos_callback(on_eos_cb, &app_data);
+    backend.set_error_callback(on_error_cb, &app_data);
 
     openLipcInstance();
     disableSleep();
@@ -716,6 +903,7 @@ int main(int argc, char* argv[]) {
     LipcSetStringProperty(lipcInstance,"com.lab126.btfd","BTenable","1:1");
 
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    app_data.window = window;
     gtk_window_set_default_size(GTK_WINDOW(window), 600, 400);
     gtk_window_set_title(GTK_WINDOW(window), "L:A_N:application_PC:T_ID:com.kbarni.kinamp");
     g_signal_connect(window, "destroy", G_CALLBACK(on_close_clicked), &app_data);
@@ -826,9 +1014,11 @@ int main(int argc, char* argv[]) {
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(playlist_frame), scrolled_window);
 
-    GtkListStore *playlist_store = gtk_list_store_new(1, G_TYPE_STRING);
-    app_data.playlist_store = playlist_store;
-    GtkWidget *playlist_treeview = gtk_tree_view_new_with_model(GTK_TREE_MODEL(playlist_store));
+    // Initialize stores
+    app_data.playlist_store = gtk_list_store_new(1, G_TYPE_STRING);
+    app_data.radio_store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
+
+    GtkWidget *playlist_treeview = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app_data.playlist_store));
     app_data.playlist_treeview = GTK_TREE_VIEW(playlist_treeview);
     gtk_container_add(GTK_CONTAINER(scrolled_window), playlist_treeview);
 
@@ -836,9 +1026,13 @@ int main(int argc, char* argv[]) {
     GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes("Filename", renderer, "text", 0, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_treeview), column);
 
+    // Container for all bottom actions
+    GtkWidget *bottom_action_vbox = gtk_vbox_new(FALSE, 5);
+    gtk_box_pack_start(GTK_BOX(main_vbox), bottom_action_vbox, FALSE, FALSE, 5);
 
-    GtkWidget *playlist_buttons_hbox = gtk_hbox_new(FALSE, 10);
-    gtk_box_pack_start(GTK_BOX(main_vbox), playlist_buttons_hbox, FALSE, FALSE, 5);
+    // --- Music Action HBox ---
+    app_data.music_action_hbox = gtk_hbox_new(FALSE, 10);
+    gtk_box_pack_start(GTK_BOX(bottom_action_vbox), app_data.music_action_hbox, FALSE, FALSE, 0);
 
     GtkWidget *add_file_button = gtk_button_new_with_label("Add file");
     gtk_container_set_border_width(GTK_CONTAINER(add_file_button), 5);
@@ -857,21 +1051,48 @@ int main(int argc, char* argv[]) {
     g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), &app_data);
     g_signal_connect(load_button, "clicked", G_CALLBACK(on_load_clicked), &app_data);
 
-    gtk_box_pack_start(GTK_BOX(playlist_buttons_hbox), add_file_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(playlist_buttons_hbox), add_folder_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(playlist_buttons_hbox), clear_playlist_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), add_file_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), add_folder_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), clear_playlist_button, FALSE, FALSE, 0);
 
     GtkWidget *align_save_load = gtk_alignment_new(1, 0.5, 0, 0);
     GtkWidget *save_load_hbox = gtk_hbox_new(FALSE, 5);
     gtk_box_pack_start(GTK_BOX(save_load_hbox), save_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(save_load_hbox), load_button, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(align_save_load), save_load_hbox);
-    gtk_box_pack_start(GTK_BOX(playlist_buttons_hbox), align_save_load, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), align_save_load, TRUE, TRUE, 0);
+
+    // --- Radio Action HBox (Initially Hidden) ---
+    app_data.radio_action_hbox = gtk_hbox_new(FALSE, 10);
+    gtk_box_pack_start(GTK_BOX(bottom_action_vbox), app_data.radio_action_hbox, FALSE, FALSE, 0);
+    
+    GtkWidget *add_station_button = gtk_button_new_with_label("Add station");
+    gtk_container_set_border_width(GTK_CONTAINER(add_station_button), 5);
+    GtkWidget *remove_station_button = gtk_button_new_with_label("Remove selected");
+    gtk_container_set_border_width(GTK_CONTAINER(remove_station_button), 5);
+
+    g_signal_connect(add_station_button, "clicked", G_CALLBACK(on_add_station_clicked), &app_data);
+    g_signal_connect(remove_station_button, "clicked", G_CALLBACK(on_remove_station_clicked), &app_data);
+
+    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), add_station_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), remove_station_button, FALSE, FALSE, 0);
+
+    // --- Switch Mode Button ---
+    app_data.switch_mode_button = gtk_button_new_with_label("Switch to radio");
+    g_signal_connect(app_data.switch_mode_button, "clicked", G_CALLBACK(on_switch_mode_clicked), &app_data);
+    gtk_box_pack_end(GTK_BOX(bottom_action_vbox), app_data.switch_mode_button, FALSE, FALSE, 0);
 
 
+    load_radio_stations(&app_data);
     load_state(&app_data);
-    g_timeout_add(500, update_progress_cb, &app_data);
+    
     gtk_widget_show_all(window);
+    
+    // Hide radio controls initially
+    gtk_widget_hide(app_data.radio_action_hbox);
+
+    g_timeout_add(500, update_progress_cb, &app_data);
+    
     gtk_main();
 
     return 0;

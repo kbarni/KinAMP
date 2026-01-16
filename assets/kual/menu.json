@@ -1,9 +1,19 @@
 {
 	"items": [
 		{
-			"name": "KinAMP Music Player",
-			"priority": 1,
-			"action": "/mnt/us/KinAMP/start_kinamp.sh"
+			"name": "KinAMP",
+			"priority": 1, 
+			"items": [
+					{
+						"name": "KinAMP Music Player",
+						"priority": 1,
+						"action": "/mnt/us/KinAMP/start_kinamp.sh"
+					},{
+						"name": "KinAMP Radio List Editor",
+						"priority": 2,
+						"action": "/mnt/us/KinAMP/start_editor.sh"
+					}
+				]
 		}
 	]
 }

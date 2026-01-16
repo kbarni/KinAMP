@@ -1,5 +1,7 @@
 #!/bin/sh
 
+export LD_LIBRARY_PATH=/mnt/us/KinAMP/libs_hf/ 
+
 is_process_running() {
     local process_name="$1"
     pgrep "$process_name" > /dev/null 2>&1
@@ -42,6 +44,10 @@ else
     if [ $exit_code -eq 10 ]; then
         # Pillow dialog
         alert "KinAMP","Continuing playing music in background. Click the KinAMP booklet again to stop."
-        ./$KINAMPMIN &
+        ./$KINAMPMIN --music &
+    elif [ $exit_code -eq 11 ]; then
+        # Pillow dialog
+        alert "KinAMP","Continuing playing music in background. Click the KinAMP booklet again to stop."
+        ./$KINAMPMIN --radio &
     fi
 fi
