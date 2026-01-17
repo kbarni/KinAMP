@@ -302,11 +302,9 @@ gboolean update_progress_cb(gpointer data) {
     return TRUE;
 }
 
-
 std::string get_config_path(const char* filename) {
     return std::string(filename);
 }
-
 
 void save_state(AppData *app_data) {
     // Only save music playlist if we are in music mode (or we should preserve it regardless)
