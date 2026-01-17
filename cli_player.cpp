@@ -32,22 +32,8 @@ struct CliState {
 // Global pointer for signal handling
 static CliState* g_state = nullptr;
 
-// --- Helper: Expand ~ in paths ---
 std::string get_config_path(const char* filename) {
-    std::string path;
-    wordexp_t p;
-    if (wordexp("~", &p, 0) == 0) {
-        if (p.we_wordv[0]) {
-            path = p.we_wordv[0];
-            path += "/";
-            path += filename;
-        }
-        wordfree(&p);
-    }
-    if (path.empty()) {
-        path = filename;
-    }
-    return path;
+    return filename;
 }
 
 // --- Helper: Load Playlist ---

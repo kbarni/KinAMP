@@ -104,9 +104,12 @@ void toggleFrontLight(AppData *ad){
 GtkWidget* create_button_from_icon(const guint8* icon_data, int padding) {
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_inline(-1, icon_data, FALSE, NULL);
     GtkWidget *image = gtk_image_new_from_pixbuf(pixbuf);
+    
     GtkWidget *button = gtk_button_new();
     gtk_button_set_image(GTK_BUTTON(button), image);
-    gtk_container_set_border_width(GTK_CONTAINER(button), padding);
+    gtk_button_set_relief(GTK_BUTTON(button), GTK_RELIEF_NONE);
+    gtk_misc_set_padding(GTK_MISC(image), padding, padding);
+
     g_object_unref(pixbuf);
     return button;
 }
@@ -247,25 +250,9 @@ gboolean update_progress_cb(gpointer data) {
     return TRUE;
 }
 
-
 std::string get_config_path(const char* filename) {
-    std::string path;
-    wordexp_t p;
-    if (wordexp("~", &p, 0) == 0) {
-        if (p.we_wordv[0]) {
-            path = p.we_wordv[0];
-            path += "/";
-            path += filename;
-        }
-        wordfree(&p);
-    } 
-    
-    if (path.empty()) {
-        path = filename;
-    }
-    return path;
+    return filename;
 }
-
 
 void save_state(AppData *app_data) {
     std::string playlist_path = get_config_path(".kinamp_playlist.m3u");
