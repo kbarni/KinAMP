@@ -213,12 +213,20 @@ int main(int argc, char* argv[]) {
 
     // 3. Load Configuration/Playlist
     if (state.explicit_playlist) {
-        if (!load_playlist(playlist_arg, state.playlist)) {
-            g_printerr("Error: Could not load playlist '%s'\n", playlist_arg.c_str());
-            return 1;
+        if (state.is_radio_mode) {
+            state.radio_urls.clear();
+            state.radio_names.clear();
+            state.radio_urls.push_back(playlist_arg);
+            state.radio_names.push_back("Custom Stream");
+            state.current_index = -1;
+        } else {
+            if (!load_playlist(playlist_arg, state.playlist)) {
+                g_printerr("Error: Could not load playlist '%s'\n", playlist_arg.c_str());
+                return 1;
+            }
+            state.current_index = -1;
+            state.is_radio_mode = false;
         }
-        state.current_index = -1; 
-        state.is_radio_mode = false;
     } else {
         CliState saved_state;
         saved_state.current_index = 0;
