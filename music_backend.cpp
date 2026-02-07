@@ -8,6 +8,7 @@
 #include <math.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/wait.h>
 
 #include <fstream>
 #include <vector>
@@ -68,20 +69,53 @@ static AudioFormat detect_format_helper(const char* resource, InputType type) {
 
 struct StreamVFS {
     ma_vfs_callbacks cb;
-    FILE* fp;
+    int fd;
+    pid_t pid;
+    Decoder* decoder;
 };
 
 static ma_result StreamVFS_onOpen(ma_vfs* pVFS, const char* pFilePath, ma_uint32 openMode, ma_vfs_file* pFile) {
     StreamVFS* self = (StreamVFS*)pVFS;
     if (openMode & MA_OPEN_MODE_WRITE) return MA_ACCESS_DENIED;
     
-    std::string command = "wget -q -T 15 --no-check-certificate -O - \"" + std::string(pFilePath) + "\"";
-    
-    self->fp = popen(command.c_str(), "r");
-    if (!self->fp) return MA_ERROR;
-    
-    *pFile = (ma_vfs_file)self->fp;
-    return MA_SUCCESS;
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("StreamVFS: pipe failed");
+        return MA_ERROR;
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("StreamVFS: fork failed");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return MA_ERROR;
+    }
+
+    if (pid == 0) { // Child
+        close(pipefd[0]); // Close read end
+        dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to pipe
+        close(pipefd[1]); // Close write end
+
+        // Close unused file descriptors
+        int max_fd = sysconf(_SC_OPEN_MAX);
+        for (int i = 3; i < max_fd; i++) close(i);
+
+        execlp("wget", "wget", "-q", "-T", "3", "--no-check-certificate", "-O", "-", pFilePath, (char*)NULL);
+        perror("StreamVFS: exec failed");
+        _exit(1);
+    } else { // Parent
+        close(pipefd[1]); // Close write end
+        self->fd = pipefd[0];
+        self->pid = pid;
+        
+        if (self->decoder) {
+            self->decoder->set_stream_pid(pid);
+        }
+
+        *pFile = (ma_vfs_file)(intptr_t)self->fd;
+        return MA_SUCCESS;
+    }
 }
 
 static ma_result StreamVFS_onOpenW(ma_vfs* pVFS, const wchar_t* pFilePath, ma_uint32 openMode, ma_vfs_file* pFile) {
@@ -90,22 +124,40 @@ static ma_result StreamVFS_onOpenW(ma_vfs* pVFS, const wchar_t* pFilePath, ma_ui
 }
 
 static ma_result StreamVFS_onClose(ma_vfs* pVFS, ma_vfs_file file) {
-    (void)pVFS;
-    FILE* fp = (FILE*)file;
-    if (fp) {
-        pclose(fp);
+    StreamVFS* self = (StreamVFS*)pVFS;
+    int fd = (int)(intptr_t)file;
+    
+    if (fd >= 0) {
+        close(fd);
     }
+    
+    if (self->pid > 0) {
+        if (self->decoder) {
+            self->decoder->set_stream_pid(0);
+        }
+        kill(self->pid, SIGTERM);
+        waitpid(self->pid, NULL, 0);
+        self->pid = 0;
+    }
+
     return MA_SUCCESS;
 }
 
 static ma_result StreamVFS_onRead(ma_vfs* pVFS, ma_vfs_file file, void* pDst, size_t sizeInBytes, size_t* pBytesRead) {
     (void)pVFS;
-    FILE* fp = (FILE*)file;
-    size_t read = fread(pDst, 1, sizeInBytes, fp);
-    if (pBytesRead) *pBytesRead = read;
+    int fd = (int)(intptr_t)file;
     
-    if (read == 0 && ferror(fp)) return MA_IO_ERROR;
-    if (read == 0 && feof(fp)) return MA_AT_END;
+    ssize_t bytesRead = 0;
+    while (true) {
+        bytesRead = read(fd, pDst, sizeInBytes);
+        if (bytesRead < 0 && errno == EINTR) continue;
+        break;
+    }
+
+    if (pBytesRead) *pBytesRead = (bytesRead > 0) ? bytesRead : 0;
+    
+    if (bytesRead == 0) return MA_AT_END;
+    if (bytesRead < 0) return MA_IO_ERROR;
     
     return MA_SUCCESS;
 }
@@ -139,7 +191,7 @@ static ma_result StreamVFS_onInfo(ma_vfs* pVFS, ma_vfs_file file, ma_file_info* 
 // Decoder Implementation
 // =================================================================================
 
-Decoder::Decoder() : stop_flag(false), running(false), thread_id(0), on_error_callback(NULL), error_user_data(NULL) {
+Decoder::Decoder() : stop_flag(false), running(false), thread_id(0), on_error_callback(NULL), error_user_data(NULL), current_stream_pid(0) {
     unlink(PIPE_PATH);
     if (mkfifo(PIPE_PATH, 0666) == -1) {
         perror("Decoder: Failed to create named pipe");
@@ -174,10 +226,23 @@ void Decoder::set_error_callback(ErrorCallback callback, void* user_data) {
     error_user_data = user_data;
 }
 
+void Decoder::set_stream_pid(pid_t pid) {
+    std::lock_guard<std::mutex> lock(pid_mutex);
+    current_stream_pid = pid;
+}
+
 void Decoder::stop() {
     if (!running) return;
 
     stop_flag = true;
+
+    // Force kill the stream process if active to unblock fread/read
+    {
+        std::lock_guard<std::mutex> lock(pid_mutex);
+        if (current_stream_pid > 0) {
+            kill(current_stream_pid, SIGTERM);
+        }
+    }
 
     int fd = open(PIPE_PATH, O_RDONLY | O_NONBLOCK);
     if (fd >= 0) close(fd);
@@ -402,7 +467,9 @@ void Decoder::decode_stream(const char* url) {
     vfs.cb.onSeek = StreamVFS_onSeek;
     vfs.cb.onTell = StreamVFS_onTell;
     vfs.cb.onInfo = StreamVFS_onInfo;
-    vfs.fp = NULL;
+    vfs.fd = -1;
+    vfs.pid = 0;
+    vfs.decoder = this;
 
     int fd = open(PIPE_PATH, O_WRONLY);
     if (fd == -1) {

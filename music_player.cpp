@@ -109,6 +109,13 @@ void toggleFrontLight(AppData *ad){
     }
 }
 
+void showLipcDialog(char *dialogtitle, char *dialogtext)
+{
+    char json[512];
+    sprintf(json,"{ \"clientParams\":{ \"alertId\":\"appAlert1\", \"show\":true, \"customStrings\":[ { \"matchStr\":\"alertTitle\", \"replaceStr\":\"%s\" }, { \"matchStr\":\"alertText\", \"replaceStr\":\"%s\" } ] } }",dialogtitle,dialogtext);
+    LipcSetStringProperty(lipcInstance,"com.lab126.pillow","pillowAlert",json);
+}
+
 GtkWidget* create_button_from_icon(const guint8* icon_data, int padding) {
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_inline(-1, icon_data, FALSE, NULL);
     GtkWidget *image = gtk_image_new_from_pixbuf(pixbuf);
@@ -137,16 +144,7 @@ struct ErrorPayload {
 
 gboolean show_error_dialog(gpointer data) {
     ErrorPayload* payload = (ErrorPayload*)data;
-    
-    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(payload->app_data->window),
-                                           GTK_DIALOG_DESTROY_WITH_PARENT,
-                                           GTK_MESSAGE_ERROR,
-                                           GTK_BUTTONS_CLOSE,
-                                           "Error: %s",
-                                           payload->msg);
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-    
+    showLipcDialog("KinAMP Error", payload->msg);  
     g_free(payload->msg);
     delete payload;
     return FALSE; // Remove from idle sources

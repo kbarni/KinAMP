@@ -7,6 +7,8 @@
 #include <atomic>
 #include <pthread.h>
 #include <memory>
+#include <mutex>
+#include <sys/types.h>
 
 // Callback type for End of Stream (song finished)
 typedef void (*EosCallback)(void* user_data);
@@ -49,6 +51,9 @@ public:
     bool is_running() const;
 
     void set_error_callback(ErrorCallback callback, void* user_data);
+    
+    // Internal use for stream killing
+    void set_stream_pid(pid_t pid);
 
 private:
     std::atomic<bool> stop_flag;
@@ -59,6 +64,9 @@ private:
 
     ErrorCallback on_error_callback;
     void* error_user_data;
+
+    std::mutex pid_mutex;
+    pid_t current_stream_pid;
 
     static void* thread_func(void* arg);
     void decode_loop();
