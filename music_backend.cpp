@@ -75,7 +75,7 @@ static ma_result StreamVFS_onOpen(ma_vfs* pVFS, const char* pFilePath, ma_uint32
     StreamVFS* self = (StreamVFS*)pVFS;
     if (openMode & MA_OPEN_MODE_WRITE) return MA_ACCESS_DENIED;
     
-    std::string command = "wget -q -O - \"" + std::string(pFilePath) + "\"";
+    std::string command = "wget -q -T 15 --no-check-certificate -O - \"" + std::string(pFilePath) + "\"";
     
     self->fp = popen(command.c_str(), "r");
     if (!self->fp) return MA_ERROR;
@@ -404,6 +404,12 @@ void Decoder::decode_stream(const char* url) {
     vfs.cb.onInfo = StreamVFS_onInfo;
     vfs.fp = NULL;
 
+    int fd = open(PIPE_PATH, O_WRONLY);
+    if (fd == -1) {
+        perror("Decoder: Failed to open pipe");
+        return;
+    }
+
     ma_decoder_config decoder_config = ma_decoder_config_init(ma_format_s16, 2, 0); 
     ma_decoder decoder;
 
@@ -414,17 +420,11 @@ void Decoder::decode_stream(const char* url) {
         if (on_error_callback) {
              on_error_callback("Unable to play stream. Ensure it is a supported format (MP3/FLAC/WAV).", error_user_data);
         }
+        close(fd);
         return;
     }
 
     g_print("Decoder: Stream Init %d Hz, %d channels\n", decoder.outputSampleRate, decoder.outputChannels);
-
-    int fd = open(PIPE_PATH, O_WRONLY);
-    if (fd == -1) {
-        perror("Decoder: Failed to open pipe");
-        ma_decoder_uninit(&decoder);
-        return;
-    }
 
     if (stop_flag) {
         close(fd);
