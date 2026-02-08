@@ -13,34 +13,7 @@
 #include "openlipc/openlipc.h"
 
 #include "music_backend.h"
-#include "assets/bluetooth_icon.h"
-#include "assets/close_icon.h"
-#include "assets/play_pause_icon.h"
-#include "assets/skip_next_icon.h"
-#include "assets/skip_previous_icon.h"
-#include "assets/stop_icon.h"
-#include "assets/title.h"
-#include "assets/shuffle_icon.h"
-#include "assets/repeat_icon.h"
-#include "assets/shuffle_on_icon.h"
-#include "assets/repeat_on_icon.h"
-#include "assets/sunny_icon.h"
-#include "assets/standby_icon.h"
-#include "assets/display_icon.h"
-#include "assets/bluetooth_icon-lr.h"
-#include "assets/close_icon-lr.h"
-#include "assets/play_pause_icon-lr.h"
-#include "assets/skip_next_icon-lr.h"
-#include "assets/skip_previous_icon-lr.h"
-#include "assets/stop_icon-lr.h"
-#include "assets/title-lr.h"
-#include "assets/shuffle_icon-lr.h"
-#include "assets/repeat_icon-lr.h"
-#include "assets/shuffle_on_icon-lr.h"
-#include "assets/repeat_on_icon-lr.h"
-#include "assets/sunny_icon-lr.h"
-#include "assets/standby_icon-lr.h"
-#include "assets/display_icon-lr.h"
+#include "icons.h"
 
 enum PlaybackStrategy {
     NORMAL,
@@ -109,7 +82,7 @@ void toggleFrontLight(AppData *ad){
     }
 }
 
-void showLipcDialog(char *dialogtitle, char *dialogtext)
+void showLipcDialog(const char *dialogtitle, const char *dialogtext)
 {
     char json[512];
     sprintf(json,"{ \"clientParams\":{ \"alertId\":\"appAlert1\", \"show\":true, \"customStrings\":[ { \"matchStr\":\"alertTitle\", \"replaceStr\":\"%s\" }, { \"matchStr\":\"alertText\", \"replaceStr\":\"%s\" } ] } }",dialogtitle,dialogtext);
@@ -396,7 +369,7 @@ void load_state(AppData *app_data) {
     }
     
     if (app_data->is_radio_mode) {
-        gtk_button_set_label(GTK_BUTTON(app_data->switch_mode_button), "Switch to music");
+        set_button_icon(app_data->switch_mode_button, app_data->is_hires ? musiclibrary_icon : musiclibrary_icon_lr);
         gtk_widget_hide(app_data->music_action_hbox);
         gtk_widget_show(app_data->radio_action_hbox);
         gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->radio_store));
@@ -844,13 +817,14 @@ void on_remove_station_clicked(GtkWidget *widget, gpointer data) {
 }
 
 void on_switch_mode_clicked(GtkWidget *widget, gpointer data) {
+    (void)widget;
     AppData *app_data = (AppData*)data;
     app_data->backend->stop(); 
 
     if (app_data->is_radio_mode) {
         // Switch to Music
         app_data->is_radio_mode = false;
-        gtk_button_set_label(GTK_BUTTON(app_data->switch_mode_button), "Switch to radio");
+        set_button_icon(app_data->switch_mode_button, app_data->is_hires ? radio_icon : radio_icon_lr);
         gtk_widget_show(app_data->music_action_hbox);
         gtk_widget_hide(app_data->radio_action_hbox);
         gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->playlist_store));
@@ -861,7 +835,7 @@ void on_switch_mode_clicked(GtkWidget *widget, gpointer data) {
         // Switch to Radio
         save_state(app_data); 
         app_data->is_radio_mode = true;
-        gtk_button_set_label(GTK_BUTTON(app_data->switch_mode_button), "Switch to music");
+        set_button_icon(app_data->switch_mode_button, app_data->is_hires ? musiclibrary_icon : musiclibrary_icon_lr);
         gtk_widget_hide(app_data->music_action_hbox);
         gtk_widget_show(app_data->radio_action_hbox);
         gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->radio_store));
@@ -1023,19 +997,24 @@ int main(int argc, char* argv[]) {
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_treeview), column);
 
     // Container for all bottom actions
-    GtkWidget *bottom_action_vbox = gtk_vbox_new(FALSE, 5);
-    gtk_box_pack_start(GTK_BOX(main_vbox), bottom_action_vbox, FALSE, FALSE, 5);
+    GtkWidget *bottom_action_hbox = gtk_hbox_new(FALSE, 5);
+    gtk_box_pack_start(GTK_BOX(main_vbox), bottom_action_hbox, FALSE, FALSE, 5);
+
+    // --- Switch Mode Button ---
+    app_data.switch_mode_button = create_button_from_icon(app_data.is_hires ? radio_icon : radio_icon_lr, btn_padding);
+    g_signal_connect(app_data.switch_mode_button, "clicked", G_CALLBACK(on_switch_mode_clicked), &app_data);
+    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.switch_mode_button, FALSE, FALSE, 0);
+
+    GtkWidget *mode_separator = gtk_vseparator_new();
+    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), mode_separator, FALSE, FALSE, 5);
 
     // --- Music Action HBox ---
     app_data.music_action_hbox = gtk_hbox_new(FALSE, 10);
-    gtk_box_pack_start(GTK_BOX(bottom_action_vbox), app_data.music_action_hbox, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.music_action_hbox, TRUE, TRUE, 0);
 
-    GtkWidget *add_file_button = gtk_button_new_with_label("Add file");
-    gtk_container_set_border_width(GTK_CONTAINER(add_file_button), 5);
-    GtkWidget *add_folder_button = gtk_button_new_with_label("Add Folder");
-    gtk_container_set_border_width(GTK_CONTAINER(add_folder_button), 5);
-    GtkWidget *clear_playlist_button = gtk_button_new_with_label("Clear playlist");
-    gtk_container_set_border_width(GTK_CONTAINER(clear_playlist_button), 5);
+    GtkWidget *add_file_button = create_button_from_icon(app_data.is_hires ? song_add_icon : song_add_icon_lr, btn_padding);
+    GtkWidget *add_folder_button = create_button_from_icon(app_data.is_hires ? folder_add_icon : folder_add_icon_lr, btn_padding);
+    GtkWidget *clear_playlist_button = create_button_from_icon(app_data.is_hires ? playlist_clear_icon : playlist_clear_icon_lr, btn_padding);
     GtkWidget *save_button = gtk_button_new_with_label("Save");
     gtk_container_set_border_width(GTK_CONTAINER(save_button), 5);
     GtkWidget *load_button = gtk_button_new_with_label("Load");
@@ -1060,9 +1039,11 @@ int main(int argc, char* argv[]) {
 
     // --- Radio Action HBox (Initially Hidden) ---
     app_data.radio_action_hbox = gtk_hbox_new(FALSE, 10);
-    gtk_box_pack_start(GTK_BOX(bottom_action_vbox), app_data.radio_action_hbox, FALSE, FALSE, 0);
-    
-    GtkWidget *add_station_button = gtk_button_new_with_label("Add station");
+    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.radio_action_hbox, TRUE, TRUE, 0);
+
+    GtkWidget *radio_info_label = gtk_label_new("Manage the radio stations from KUAL - Radio List Editor.");
+    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), radio_info_label, FALSE, FALSE, 0);
+/*    GtkWidget *add_station_button = gtk_button_new_with_label("Add station");
     gtk_container_set_border_width(GTK_CONTAINER(add_station_button), 5);
     GtkWidget *remove_station_button = gtk_button_new_with_label("Remove selected");
     gtk_container_set_border_width(GTK_CONTAINER(remove_station_button), 5);
@@ -1071,12 +1052,7 @@ int main(int argc, char* argv[]) {
     g_signal_connect(remove_station_button, "clicked", G_CALLBACK(on_remove_station_clicked), &app_data);
 
     gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), add_station_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), remove_station_button, FALSE, FALSE, 0);
-
-    // --- Switch Mode Button ---
-    app_data.switch_mode_button = gtk_button_new_with_label("Switch to radio");
-    g_signal_connect(app_data.switch_mode_button, "clicked", G_CALLBACK(on_switch_mode_clicked), &app_data);
-    gtk_box_pack_end(GTK_BOX(bottom_action_vbox), app_data.switch_mode_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), remove_station_button, FALSE, FALSE, 0);*/
 
 
     load_radio_stations(&app_data);
