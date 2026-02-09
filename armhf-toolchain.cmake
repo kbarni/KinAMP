@@ -4,7 +4,7 @@ set(CMAKE_SYSTEM_PROCESSOR arm)   # armv7hf
 
 # Compilers
 set(TARGET arm-kindlehf-linux-gnueabihf)
-set(TOOLCHAIN /home/barna/x-tools/arm-kindlehf-linux-gnueabihf)
+set(TOOLCHAIN $ENV{HOME}/x-tools/arm-kindlehf-linux-gnueabihf)
 set(SYSROOT   ${TOOLCHAIN}/${TARGET}/sysroot)
 
 set(CMAKE_C_COMPILER   ${TOOLCHAIN}/bin/${TARGET}-gcc)
