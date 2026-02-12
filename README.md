@@ -24,7 +24,7 @@ Features
 - Uses the integrated GStreamer library for output
 - No other dependencies
 
-Useage
+Usage
 ------
 
 ![Button bar](assets/kinamp_buttons.png)
