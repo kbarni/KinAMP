@@ -316,12 +316,39 @@ void save_state(AppData *app_data) {
     std::string config_path = get_config_path(".kinamp.conf");
     std::ofstream conffile(config_path.c_str());
     if (conffile.is_open()) {
+        conffile.imbue(std::locale::classic());
         conffile << "current_index=" << current_index << std::endl;
         conffile << "playback_strategy=" << app_data->current_strategy << std::endl;
         conffile << "is_radio_mode=" << (app_data->is_radio_mode ? 1 : 0) << std::endl;
         conffile << "volume=" << app_data->backend->get_volume() << std::endl;
         conffile.close();
     }
+}
+
+double myatof(std::string s)
+{
+    u_int p=0;
+    double val=0;
+    double e=0.1;
+    u_char c;
+    while(p<s.length()){
+        c=s[p];
+        if(c!='.') {
+            val=val*10+(c-'0');
+            printf("%c %lf\n",c,val);
+        }else{
+            p++;
+            while(p<s.length()){
+                c=s[p];
+                val+=(c-'0')*e;
+                printf("%c %lf\n",c,val);
+                e=e/10;
+                p++;
+            }
+        }
+        p++;
+    }
+    return val;
 }
 
 void load_state(AppData *app_data) {
@@ -346,6 +373,7 @@ void load_state(AppData *app_data) {
     if (conffile.is_open()) {
         std::string line;
         while (std::getline(conffile, line)) {
+            printf(line.c_str());printf("\n");
             if (line.find("current_index=") == 0) {
                 current_index = atoi(line.substr(14).c_str());
             }
@@ -367,7 +395,8 @@ void load_state(AppData *app_data) {
                 app_data->is_radio_mode = (atoi(line.substr(14).c_str()) != 0);
             }
             if (line.find("volume=") == 0) {
-                double volume = atof(line.substr(7).c_str());
+                double volume = myatof(line.substr(7));
+                printf("Using volume %s, %s, %f\n",line.c_str(),line.substr(7).c_str(),volume);
                 app_data->backend->set_volume(volume);
                 gtk_range_set_value(GTK_RANGE(app_data->volume_slider), volume);
             }
@@ -584,13 +613,14 @@ void on_background_clicked(GtkWidget *widget, gpointer data) {
 void on_close_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
     AppData *app_data = (AppData*)data;
+    save_state(app_data);
+    app_data->backend->stop();
     LipcSetIntProperty(lipcInstance,"com.lab126.powerd","flIntensity",app_data->flIntensity);
     LipcSetIntProperty(lipcInstance,"com.lab126.btfd","ensureBTconnection",0);
     enableSleep();
     closeLipcInstance();
-    save_state(app_data);
-    app_data->backend->stop();
     gtk_main_quit();
+    exit(0);
 }
 
 void on_shuffle_clicked(GtkWidget *widget, gpointer data) {

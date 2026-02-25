@@ -191,7 +191,7 @@ static ma_result StreamVFS_onInfo(ma_vfs* pVFS, ma_vfs_file file, ma_file_info* 
 // Decoder Implementation
 // =================================================================================
 
-Decoder::Decoder() : stop_flag(false), running(false), thread_id(0), on_error_callback(NULL), error_user_data(NULL), current_stream_pid(0) {
+Decoder::Decoder() : stop_flag(false), running(false), thread_id(0), volume(1.0), on_error_callback(NULL), error_user_data(NULL), current_stream_pid(0) {
     unlink(PIPE_PATH);
     if (mkfifo(PIPE_PATH, 0666) == -1) {
         perror("Decoder: Failed to create named pipe");
@@ -201,6 +201,10 @@ Decoder::Decoder() : stop_flag(false), running(false), thread_id(0), on_error_ca
 Decoder::~Decoder() {
     stop();
     unlink(PIPE_PATH);
+}
+
+void Decoder::set_volume(double vol) {
+    volume = vol;
 }
 
 bool Decoder::start(const char* filepath, int start_time) {
@@ -369,8 +373,15 @@ void Decoder::decode_mp4_file(const char* filepath, int start_time) {
         }
 
         if (frameInfo.samples > 0) {
+            int16_t* samples = (int16_t*)sample_buffer;
+            double vol = volume.load();
+            if (vol != 1.0) {
+                for (unsigned int i = 0; i < frameInfo.samples; ++i) {
+                    samples[i] = (int16_t)(samples[i] * vol);
+                }
+            }
             ssize_t to_write = frameInfo.samples * 2; 
-            ssize_t written = write(fd, sample_buffer, to_write);
+            ssize_t written = write(fd, samples, to_write);
 
             if (written == -1) {
                 if (errno == EPIPE) {
@@ -435,6 +446,13 @@ void Decoder::decode_miniaudio(const char* filepath, int start_time) {
                  g_printerr("Decoder: Miniaudio read error: %d\n", result);
             }
             break;
+        }
+
+        double vol = volume.load();
+        if (vol != 1.0) {
+            for (size_t i = 0; i < frames_read * decoder.outputChannels; ++i) {
+                pcm_buffer[i] = (int16_t)(pcm_buffer[i] * vol);
+            }
         }
 
         ssize_t to_write = frames_read * decoder.outputChannels * sizeof(int16_t);
@@ -513,6 +531,13 @@ void Decoder::decode_stream(const char* url) {
             break;
         }
 
+        double vol = volume.load();
+        if (vol != 1.0) {
+            for (size_t i = 0; i < frames_read * decoder.outputChannels; ++i) {
+                pcm_buffer[i] = (int16_t)(pcm_buffer[i] * vol);
+            }
+        }
+
         ssize_t to_write = frames_read * decoder.outputChannels * sizeof(int16_t);
         ssize_t written = write(fd, pcm_buffer.data(), to_write);
 
@@ -554,11 +579,12 @@ MusicBackend::MusicBackend()
       current_filepath_str(""), stopping(false),
       on_eos_callback(NULL), eos_user_data(NULL), 
       on_error_callback(NULL), error_user_data(NULL),
-      last_position(0)
+      last_position(0), current_volume(1.0)
 {
     signal(SIGPIPE, SIG_IGN);
     
     decoder->set_error_callback(internal_decoder_error_callback, this);
+    decoder->set_volume(current_volume);
 
     gst_init(NULL, NULL);
 }
@@ -798,6 +824,15 @@ void MusicBackend::stop() {
     is_paused = false;
 }
 
+void MusicBackend::set_volume(double volume) {
+    current_volume = volume;
+    decoder->set_volume(volume);
+}
+
+double MusicBackend::get_volume() {
+    return current_volume;
+}
+
 void MusicBackend::cleanup_pipeline() {
     if (bus_watch_id > 0) {
         g_source_remove(bus_watch_id);
@@ -811,6 +846,7 @@ void MusicBackend::cleanup_pipeline() {
 }
 
 gboolean MusicBackend::bus_callback_func(GstBus *bus, GstMessage *msg, gpointer data) {
+    (void)bus;
     MusicBackend* self = static_cast<MusicBackend*>(data);
 
     switch (GST_MESSAGE_TYPE(msg)) {
