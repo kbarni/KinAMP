@@ -10,12 +10,15 @@ Supported audio formats:
 - MP3
 - FLAC
 - WAV
+- AAC
 
 Features
 --------
 
 - Fully native fast (C++ and GTK2) interface
 - Simple to use
+- Internet radio streams (mp3 format only)
+- Koreader plugin
 - Interface optimized for eink displays (minimal redraws to save battery)
 - Low power consumption (4-5% per hour with frontlight and display updates off)
 - Fast access to Bluetooth and frontlight settings
@@ -29,11 +32,23 @@ Usage
 
 ![Button bar](assets/kinamp_buttons.png)
 
+### Using radio mode
+
+First, you need to create your favorite radio list. Start the **Radio list editor** utility from KUAL.
+
+Then, switch to radio mode using the button in lower left corner. The playlist will be replaced with the radio station list.
+
 ### Using background mode
 
 - Start KinAMP and build your desired playlist.
 - Click the *Background* button (with the circles, next to close). KinAMP will close and background playback will start
 - To stop background playback, click the KinAMP booklet again.
+
+### Koreader plugin
+
+The KinAMP plugin in the Koreader *Tools menu*. There is a simple playlist editor, with music and radio player.
+
+Unfortunately currently there is no bluetooth control from Koreader (as the `com.lab126.btfd` service is disabled) - so probably the headphone will disconnect after 20 minutes.
 
 Installation
 ------------
