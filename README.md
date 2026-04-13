@@ -34,9 +34,17 @@ Usage
 
 ### Using radio mode
 
-First, you need to create your favorite radio list. Start the **Radio list editor** utility from KUAL.
+First, you need to create your favorite radio list. Start the **Radio list editor** utility from KUAL. Add a station from the provided list (*over 45000 radio stations!*) or add the station URL manually.
 
 Then, switch to radio mode using the button in lower left corner. The playlist will be replaced with the radio station list.
+
+#### Creating a station list manually
+
+Create a file called `.kinamp_radio.txt` using a text editor with the list of your preferred stations in the format `Station name|URL` for each line. Example:
+
+    Virgin Radio|http://icy.unitedradio.it/VirginHardRock.mp3
+
+Copy this file to the Kinamp folder on the Kindle.
 
 ### Using background mode
 
