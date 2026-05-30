@@ -54,9 +54,9 @@ Copy this file to the Kinamp folder on the Kindle.
 
 ### Koreader plugin
 
-The KinAMP plugin in the Koreader *Tools menu*. There is a simple playlist editor, with music and radio player.
+*To use the KinAMP in Koreader, it is strongly recommended to **install and enable the [Kindle-bt-keepalive](https://github.com/imanubdesigner/kindle-bt-keepalive)**, which disables the headphone disconnect after 20 minutes.*
 
-Unfortunately currently there is no bluetooth control from Koreader (as the `com.lab126.btfd` service is disabled) - so probably the headphone will disconnect after 20 minutes. As a workaround you can use the [Kindle-bt-keepalive](https://github.com/imanubdesigner/kindle-bt-keepalive) KUAL extension by Manuel.
+The KinAMP plugin in the Koreader *Tools menu*. There is a simple playlist editor, with music and radio player. It is a simplified version of KinAMP, but has all the functionnalities to enjoy your favorite music while reading.
 
 Installation
 ------------
