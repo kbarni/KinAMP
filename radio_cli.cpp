@@ -13,6 +13,7 @@ void wait_for_enter();
 void show_main_menu();
 void list_stations();
 void add_station();
+void add_station_manual();
 void remove_station();
 std::string to_lower(const std::string& str);
 bool case_insensitive_contains(const std::string& str, const std::string& sub);
@@ -202,6 +203,7 @@ void show_main_menu() {
     printf("1 - List stations\n");
     printf("2 - Add station\n");
     printf("3 - Remove station\n");
+    printf("4 - Add station manually\n");
     printf("Q - Quit\n\n");
     printf("Your choice: ");
 
@@ -212,6 +214,7 @@ void show_main_menu() {
         case '1': list_stations(); break;
         case '2': add_station(); break;
         case '3': remove_station(); break;
+        case '4': add_station_manual(); break;
         case 'q':
         case 'Q': exit(0);
         default: break;
@@ -372,6 +375,67 @@ void add_station() {
             }
         }
     }
+}
+
+void add_station_manual() {
+    clear_screen();
+    printf("Add station manually\n");
+    printf("====================\n\n");
+    
+    char name_buffer[256];
+    printf("Enter station name: ");
+    if (!fgets(name_buffer, sizeof(name_buffer), stdin)) return;
+    name_buffer[strcspn(name_buffer, "\r\n")] = 0;
+    if (strlen(name_buffer) == 0) return;
+
+    char url_buffer[1024];
+    printf("Enter URL: ");
+    if (!fgets(url_buffer, sizeof(url_buffer), stdin)) return;
+    url_buffer[strcspn(url_buffer, "\r\n")] = 0;
+    if (strlen(url_buffer) == 0) return;
+
+    Station selected;
+    selected.name = name_buffer;
+    selected.url = url_buffer;
+
+    if (ends_with_ci(selected.url, ".m3u") || ends_with_ci(selected.url, ".pls")) {
+        printf("Downloading playlist...\n");
+        std::vector<std::string> streams = fetch_playlist_urls(selected.url);
+        if (streams.empty()) {
+            printf("No streams found in playlist.\n");
+            wait_for_enter();
+            return;
+        }
+        
+        clear_screen();
+        printf("Select stream from playlist:\n");
+        for (size_t k = 0; k < streams.size(); ++k) {
+            printf("%zu. %s\n", k + 1, streams[k].c_str());
+        }
+        printf("c. Cancel\n");
+        printf("Choice: ");
+        char subinput[10];
+        if (fgets(subinput, sizeof(subinput), stdin)) {
+            if (subinput[0] == 'c' || subinput[0] == 'C') return;
+            if (isdigit(subinput[0])) {
+                size_t subchoice = atoi(subinput);
+                if (subchoice >= 1 && subchoice <= streams.size()) {
+                    selected.url = streams[subchoice - 1];
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+
+    user_stations.push_back(selected);
+    save_user_stations();
+    printf("Added '%s' to your list.\n", selected.name.c_str());
+    wait_for_enter();
 }
 
 void remove_station() {

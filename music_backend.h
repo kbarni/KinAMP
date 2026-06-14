@@ -55,12 +55,15 @@ public:
     // Internal use for stream killing
     void set_stream_pid(pid_t pid);
 
+    void set_volume(double vol);
+
 private:
     std::atomic<bool> stop_flag;
     std::atomic<bool> running;
     pthread_t thread_id;
     std::string current_filepath;
     int start_time;
+    std::atomic<double> volume;
 
     ErrorCallback on_error_callback;
     void* error_user_data;
@@ -95,6 +98,8 @@ public:
     void play_file(const char* filepath, int start_time = 0);
     void pause();
     void stop();
+    void set_volume(double volume);
+    double get_volume();
     
     // Returns true if the backend is currently performing a stop operation
     // (used to prevent UI race conditions)
@@ -134,6 +139,7 @@ private:
     void* error_user_data;
     
     gint64 last_position;
+    double current_volume;
 
     // Helper to cleanup GStreamer resources
     void cleanup_pipeline();

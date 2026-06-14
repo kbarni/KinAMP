@@ -41,6 +41,7 @@ struct AppData {
     int current_index;
     GtkWidget *shuffle_button;
     GtkWidget *repeat_button;
+    GtkWidget *volume_slider;
     
     GtkWidget *music_action_hbox;
     GtkWidget *radio_action_hbox;
@@ -315,11 +316,39 @@ void save_state(AppData *app_data) {
     std::string config_path = get_config_path(".kinamp.conf");
     std::ofstream conffile(config_path.c_str());
     if (conffile.is_open()) {
+        conffile.imbue(std::locale::classic());
         conffile << "current_index=" << current_index << std::endl;
         conffile << "playback_strategy=" << app_data->current_strategy << std::endl;
         conffile << "is_radio_mode=" << (app_data->is_radio_mode ? 1 : 0) << std::endl;
+        conffile << "volume=" << app_data->backend->get_volume() << std::endl;
         conffile.close();
     }
+}
+
+double myatof(std::string s)
+{
+    u_int p=0;
+    double val=0;
+    double e=0.1;
+    u_char c;
+    while(p<s.length()){
+        c=s[p];
+        if(c!='.') {
+            val=val*10+(c-'0');
+            printf("%c %lf\n",c,val);
+        }else{
+            p++;
+            while(p<s.length()){
+                c=s[p];
+                val+=(c-'0')*e;
+                printf("%c %lf\n",c,val);
+                e=e/10;
+                p++;
+            }
+        }
+        p++;
+    }
+    return val;
 }
 
 void load_state(AppData *app_data) {
@@ -344,6 +373,7 @@ void load_state(AppData *app_data) {
     if (conffile.is_open()) {
         std::string line;
         while (std::getline(conffile, line)) {
+            printf(line.c_str());printf("\n");
             if (line.find("current_index=") == 0) {
                 current_index = atoi(line.substr(14).c_str());
             }
@@ -363,6 +393,12 @@ void load_state(AppData *app_data) {
             }
             if (line.find("is_radio_mode=") == 0) {
                 app_data->is_radio_mode = (atoi(line.substr(14).c_str()) != 0);
+            }
+            if (line.find("volume=") == 0) {
+                double volume = myatof(line.substr(7));
+                printf("Using volume %s, %s, %f\n",line.c_str(),line.substr(7).c_str(),volume);
+                app_data->backend->set_volume(volume);
+                gtk_range_set_value(GTK_RANGE(app_data->volume_slider), volume);
             }
         }
         conffile.close();
@@ -577,13 +613,14 @@ void on_background_clicked(GtkWidget *widget, gpointer data) {
 void on_close_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
     AppData *app_data = (AppData*)data;
+    save_state(app_data);
+    app_data->backend->stop();
     LipcSetIntProperty(lipcInstance,"com.lab126.powerd","flIntensity",app_data->flIntensity);
     LipcSetIntProperty(lipcInstance,"com.lab126.btfd","ensureBTconnection",0);
     enableSleep();
     closeLipcInstance();
-    save_state(app_data);
-    app_data->backend->stop();
     gtk_main_quit();
+    exit(0);
 }
 
 void on_shuffle_clicked(GtkWidget *widget, gpointer data) {
@@ -629,6 +666,12 @@ void on_displayUpdate_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
     AppData *app_data = (AppData*)data;
     app_data->dispUpdate = !(app_data->dispUpdate);
+}
+
+void on_volume_changed(GtkRange *range, gpointer data) {
+    AppData *app_data = (AppData*)data;
+    double volume = gtk_range_get_value(range);
+    app_data->backend->set_volume(volume);
 }
 
 void on_add_file_clicked(GtkWidget *widget, gpointer data) {
@@ -963,13 +1006,18 @@ int main(int argc, char* argv[]) {
     GtkWidget *spacer2 = gtk_label_new("");
     gtk_box_pack_start(GTK_BOX(controls_hbox), spacer2, TRUE, TRUE, 0);
 
-    GtkWidget *right_controls_hbox = gtk_hbox_new(FALSE, 2);
-    gtk_box_pack_start(GTK_BOX(right_controls_hbox), dispupdate_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(right_controls_hbox), frontlight_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(right_controls_hbox), bluetooth_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(right_controls_hbox), background_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(right_controls_hbox), close_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(controls_hbox), right_controls_hbox, FALSE, FALSE, 0);
+    // Volume Slider
+    GdkPixbuf *vol_pixbuf = gdk_pixbuf_new_from_inline(-1, app_data.is_hires ? volume_slider_icon : volume_slider_icon_lr, FALSE, NULL);
+    GtkWidget *vol_icon = gtk_image_new_from_pixbuf(vol_pixbuf);
+    g_object_unref(vol_pixbuf);
+    gtk_box_pack_start(GTK_BOX(controls_hbox), vol_icon, FALSE, FALSE, 5);
+
+    app_data.volume_slider = gtk_hscale_new_with_range(0, 1, 0.05);
+    gtk_scale_set_draw_value(GTK_SCALE(app_data.volume_slider), FALSE);
+    gtk_widget_set_size_request(app_data.volume_slider, app_data.is_hires ? 200 : 100, app_data.is_hires ? 100 : 30);
+    gtk_range_set_value(GTK_RANGE(app_data.volume_slider), 1.0);
+    g_signal_connect(app_data.volume_slider, "value-changed", G_CALLBACK(on_volume_changed), &app_data);
+    gtk_box_pack_start(GTK_BOX(controls_hbox), app_data.volume_slider, FALSE, FALSE, 5);
 
 
     GtkWidget *playlist_label = gtk_label_new("<b>Playlist</b>"); 
@@ -1010,39 +1058,38 @@ int main(int argc, char* argv[]) {
 
     // --- Music Action HBox ---
     app_data.music_action_hbox = gtk_hbox_new(FALSE, 10);
-    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.music_action_hbox, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.music_action_hbox, FALSE, FALSE, 0);
 
     GtkWidget *add_file_button = create_button_from_icon(app_data.is_hires ? song_add_icon : song_add_icon_lr, btn_padding);
     GtkWidget *add_folder_button = create_button_from_icon(app_data.is_hires ? folder_add_icon : folder_add_icon_lr, btn_padding);
     GtkWidget *clear_playlist_button = create_button_from_icon(app_data.is_hires ? playlist_clear_icon : playlist_clear_icon_lr, btn_padding);
-    GtkWidget *save_button = gtk_button_new_with_label("Save");
-    gtk_container_set_border_width(GTK_CONTAINER(save_button), 5);
-    GtkWidget *load_button = gtk_button_new_with_label("Load");
-    gtk_container_set_border_width(GTK_CONTAINER(load_button), 5);
 
     g_signal_connect(add_file_button, "clicked", G_CALLBACK(on_add_file_clicked), &app_data);
     g_signal_connect(add_folder_button, "clicked", G_CALLBACK(on_add_folder_clicked), &app_data);
     g_signal_connect(clear_playlist_button, "clicked", G_CALLBACK(on_clear_playlist_clicked), &app_data);
-    g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), &app_data);
-    g_signal_connect(load_button, "clicked", G_CALLBACK(on_load_clicked), &app_data);
 
     gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), add_file_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), add_folder_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), clear_playlist_button, FALSE, FALSE, 0);
 
-    GtkWidget *align_save_load = gtk_alignment_new(1, 0.5, 0, 0);
-    GtkWidget *save_load_hbox = gtk_hbox_new(FALSE, 5);
-    gtk_box_pack_start(GTK_BOX(save_load_hbox), save_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(save_load_hbox), load_button, FALSE, FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(align_save_load), save_load_hbox);
-    gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), align_save_load, TRUE, TRUE, 0);
-
     // --- Radio Action HBox (Initially Hidden) ---
     app_data.radio_action_hbox = gtk_hbox_new(FALSE, 10);
-    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.radio_action_hbox, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.radio_action_hbox, FALSE, FALSE, 0);
 
-    GtkWidget *radio_info_label = gtk_label_new("Manage the radio stations from KUAL - Radio List Editor.");
+    GtkWidget *radio_info_label = gtk_label_new("Add radio stations in KUAL.");
     gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), radio_info_label, FALSE, FALSE, 0);
+
+    // --- Right controls (Common to both modes) ---
+    GtkWidget *right_controls_hbox = gtk_hbox_new(FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(right_controls_hbox), dispupdate_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(right_controls_hbox), frontlight_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(right_controls_hbox), bluetooth_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(right_controls_hbox), background_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(right_controls_hbox), close_button, FALSE, FALSE, 0);
+
+    GtkWidget *align_right_controls = gtk_alignment_new(1, 0.5, 0, 0);
+    gtk_container_add(GTK_CONTAINER(align_right_controls), right_controls_hbox);
+    gtk_box_pack_start(GTK_BOX(bottom_action_hbox), align_right_controls, TRUE, TRUE, 0);
 /*    GtkWidget *add_station_button = gtk_button_new_with_label("Add station");
     gtk_container_set_border_width(GTK_CONTAINER(add_station_button), 5);
     GtkWidget *remove_station_button = gtk_button_new_with_label("Remove selected");
@@ -1060,8 +1107,14 @@ int main(int argc, char* argv[]) {
     
     gtk_widget_show_all(window);
     
-    // Hide radio controls initially
-    gtk_widget_hide(app_data.radio_action_hbox);
+    // Ensure the correct mode UI is shown after show_all
+    if (app_data.is_radio_mode) {
+        gtk_widget_hide(app_data.music_action_hbox);
+        gtk_widget_show(app_data.radio_action_hbox);
+    } else {
+        gtk_widget_show(app_data.music_action_hbox);
+        gtk_widget_hide(app_data.radio_action_hbox);
+    }
 
     g_timeout_add(500, update_progress_cb, &app_data);
     

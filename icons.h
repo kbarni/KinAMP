@@ -36,3 +36,5 @@
 #include "assets/folder_add_icon-lr.h"
 #include "assets/playlist_clear_icon.h"
 #include "assets/playlist_clear_icon-lr.h"
+#include "assets/volume_slider_icon.h"
+#include "assets/volume_slider_icon-lr.h"
