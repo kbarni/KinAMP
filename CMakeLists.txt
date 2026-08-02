@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.5)
-project(KinAMP)
+
+# Keep in sync with the GIT release tag: the "Check for updates" dialog compares
+# this against the tag name of the latest GitHub release.
+project(KinAMP VERSION 2.2)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,6 +32,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     .
     mpeg4
     /usr/include
+)
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    KINAMP_VERSION="${PROJECT_VERSION}"
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

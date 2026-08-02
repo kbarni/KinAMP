@@ -9,16 +9,33 @@
 #include <libgen.h>
 #include <random>
 #include <sstream>
+#include <ctime>
+#include <cctype>
 
 #include "openlipc/openlipc.h"
 
 #include "music_backend.h"
 #include "icons.h"
 
+// KINAMP_VERSION comes from the project() version in CMakeLists.txt. Guessing a
+// fallback here would make the update check offer bogus updates, so require it.
+#ifndef KINAMP_VERSION
+#error "KINAMP_VERSION is not defined - build with CMake."
+#endif
+
+#define KINAMP_GITHUB_URL "https://www.github.com/kbarni/KinAMP"
+#define KINAMP_RELEASE_API "https://api.github.com/repos/kbarni/KinAMP/releases/latest"
+
 enum PlaybackStrategy {
     NORMAL,
     REPEAT,
     RANDOM
+};
+
+enum SleepMode {
+    SLEEP_OFF,
+    SLEEP_TIMER,
+    SLEEP_END_OF_PLAYLIST
 };
 
 struct AppData {
@@ -36,6 +53,12 @@ struct AppData {
     int flIntensity;
     bool next_song_pending;
     bool dispUpdate;
+
+    SleepMode sleep_mode;
+    int sleep_minutes;      // duration last chosen in the sleep dialog
+    time_t sleep_deadline;  // absolute time the timer fires (SLEEP_TIMER only)
+    bool sleep_quit_pending;
+
     std::string next_song_path;
     std::string last_title;
     int current_index;
@@ -48,6 +71,9 @@ struct AppData {
     
     GtkWidget *window;
 };
+
+// Defined below save_state(), but needed by the sleep timer in update_progress_cb().
+void quit_app(AppData *app_data);
 
 static LIPC * lipcInstance = 0;
 
@@ -143,11 +169,22 @@ void on_eos_cb(void* user_data) {
 
     g_print("UI: End-of-Stream reached. Planning next song.\n");
 
+    // Shuffle and repeat never reach a real end of playlist, so there the sleep
+    // request means "stop once the song that was playing is over".
+    if (app_data->sleep_mode == SLEEP_END_OF_PLAYLIST && app_data->current_strategy != NORMAL) {
+        g_print("UI: Sleep at end of playlist - stopping after the current song.\n");
+        app_data->sleep_quit_pending = true;
+        return;
+    }
+
     GtkTreeModel *model = GTK_TREE_MODEL(app_data->playlist_store);
     GtkTreeSelection *selection = gtk_tree_view_get_selection(app_data->playlist_treeview);
     GtkTreeIter iter;
 
     if (!gtk_tree_selection_get_selected(selection, &model, &iter)) {
+        if (app_data->sleep_mode == SLEEP_END_OF_PLAYLIST) {
+            app_data->sleep_quit_pending = true;
+        }
         return;
     }
 
@@ -199,6 +236,9 @@ void on_eos_cb(void* user_data) {
             app_data->next_song_pending = true;
             g_free(file_path);
         }
+    } else if (app_data->sleep_mode == SLEEP_END_OF_PLAYLIST) {
+        g_print("UI: Sleep at end of playlist - last song finished.\n");
+        app_data->sleep_quit_pending = true;
     }
 
     gtk_tree_path_free(current_path);
@@ -207,6 +247,18 @@ void on_eos_cb(void* user_data) {
 
 gboolean update_progress_cb(gpointer data) {
     AppData *app_data = (AppData*)data;
+
+    if (app_data->sleep_mode == SLEEP_TIMER && time(NULL) >= app_data->sleep_deadline) {
+        g_print("UI: Sleep timer elapsed. Closing KinAMP.\n");
+        app_data->sleep_quit_pending = true;
+    }
+
+    if (app_data->sleep_quit_pending) {
+        app_data->sleep_quit_pending = false;
+        app_data->sleep_mode = SLEEP_OFF;
+        quit_app(app_data);
+        return FALSE;
+    }
 
     if (app_data->next_song_pending && !app_data->backend->is_playing && !app_data->backend->is_shutting_down()) {
         app_data->next_song_pending = false;
@@ -233,11 +285,20 @@ gboolean update_progress_cb(gpointer data) {
 
     if (app_data->backend->is_playing || app_data->backend->is_paused) {
         gint64 position = app_data->backend->get_position();
-        
+
         char time_str[32];
         int pos_seconds = position / GST_SECOND;
-        
-        if (app_data->is_radio_mode) {
+
+        if (app_data->sleep_mode != SLEEP_OFF) {
+            // While a sleep is armed the time display shows the countdown instead.
+            if (app_data->sleep_mode == SLEEP_TIMER) {
+                long remaining = (long)(app_data->sleep_deadline - time(NULL));
+                if (remaining < 0) remaining = 0;
+                snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?"☾%02ld:%02ld":"  ☾  "), remaining / 60, remaining % 60);
+            } else {
+                snprintf(time_str, sizeof(time_str), "☾ end");
+            }
+        } else if (app_data->is_radio_mode) {
              snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?" ● LIVE ":"   ●   "));
         } else {
             if (app_data->backend->is_paused) {
@@ -247,7 +308,7 @@ gboolean update_progress_cb(gpointer data) {
             }
         }
         gtk_label_set_text(app_data->time_label, time_str);
-        
+
         if (!app_data->is_radio_mode) {
             const char* full_path = app_data->backend->get_current_filepath();
             if (full_path && strlen(full_path) > 0) {
@@ -263,7 +324,17 @@ gboolean update_progress_cb(gpointer data) {
         }
 
     } else {
-        gtk_label_set_text(app_data->time_label, "▢--:--");
+        if (app_data->sleep_mode == SLEEP_TIMER) {
+            char time_str[32];
+            long remaining = (long)(app_data->sleep_deadline - time(NULL));
+            if (remaining < 0) remaining = 0;
+            snprintf(time_str, sizeof(time_str), (app_data->dispUpdate?"☾%02ld:%02ld":"  ☾  "), remaining / 60, remaining % 60);
+            gtk_label_set_text(app_data->time_label, time_str);
+        } else if (app_data->sleep_mode == SLEEP_END_OF_PLAYLIST) {
+            gtk_label_set_text(app_data->time_label, "☾ end");
+        } else {
+            gtk_label_set_text(app_data->time_label, "▢--:--");
+        }
         if (app_data->last_title != "No song playing") {
             gtk_label_set_text(app_data->song_title_label, "No song playing");
             app_data->last_title = "No song playing";
@@ -320,6 +391,18 @@ void save_state(AppData *app_data) {
         conffile << "is_radio_mode=" << (app_data->is_radio_mode ? 1 : 0) << std::endl;
         conffile.close();
     }
+}
+
+// Closes KinAMP the normal way: restores the device power/BT settings, saves the
+// state and leaves gtk_main() so the device is free to suspend again.
+void quit_app(AppData *app_data) {
+    LipcSetIntProperty(lipcInstance,"com.lab126.powerd","flIntensity",app_data->flIntensity);
+    LipcSetIntProperty(lipcInstance,"com.lab126.btfd","ensureBTconnection",0);
+    enableSleep();
+    closeLipcInstance();
+    save_state(app_data);
+    app_data->backend->stop();
+    gtk_main_quit();
 }
 
 void load_state(AppData *app_data) {
@@ -576,14 +659,7 @@ void on_background_clicked(GtkWidget *widget, gpointer data) {
 
 void on_close_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
-    AppData *app_data = (AppData*)data;
-    LipcSetIntProperty(lipcInstance,"com.lab126.powerd","flIntensity",app_data->flIntensity);
-    LipcSetIntProperty(lipcInstance,"com.lab126.btfd","ensureBTconnection",0);
-    enableSleep();
-    closeLipcInstance();
-    save_state(app_data);
-    app_data->backend->stop();
-    gtk_main_quit();
+    quit_app((AppData*)data);
 }
 
 void on_shuffle_clicked(GtkWidget *widget, gpointer data) {
@@ -843,6 +919,397 @@ void on_switch_mode_clicked(GtkWidget *widget, gpointer data) {
 }
 
 
+// ---------------------------------------------------------------- Sleep mode
+
+struct SleepDialogData {
+    AppData *app_data;
+    GtkWidget *radio_timer;
+    GtkWidget *minutes_label;
+    int minutes;
+};
+
+static void sleep_refresh_minutes(SleepDialogData *sd) {
+    char markup[64];
+    snprintf(markup, sizeof(markup), "<b>%d min</b>", sd->minutes);
+    gtk_label_set_markup(GTK_LABEL(sd->minutes_label), markup);
+}
+
+static void on_sleep_delta_clicked(GtkWidget *widget, gpointer data) {
+    SleepDialogData *sd = (SleepDialogData*)data;
+    int delta = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "delta"));
+
+    sd->minutes += delta;
+    if (sd->minutes < 1) sd->minutes = 1;
+    if (sd->minutes > 300) sd->minutes = 300;
+    sleep_refresh_minutes(sd);
+
+    // Touching the duration implies the user wants the timer.
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sd->radio_timer), TRUE);
+}
+
+static GtkWidget* create_sleep_delta_button(SleepDialogData *sd, const char *label, int delta) {
+    GtkWidget *button = gtk_button_new_with_label(label);
+    gtk_container_set_border_width(GTK_CONTAINER(button), 2);
+    g_object_set_data(G_OBJECT(button), "delta", GINT_TO_POINTER(delta));
+    g_signal_connect(button, "clicked", G_CALLBACK(on_sleep_delta_clicked), sd);
+    return button;
+}
+
+void on_sleep_clicked(GtkWidget *widget, gpointer data) {
+    AppData *app_data = (AppData*)data;
+
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("L:D_N:dialog_ID:com.kbarni.kinamp",
+                                                    GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                    GTK_DIALOG_MODAL,
+                                                    GTK_STOCK_OK, GTK_RESPONSE_ACCEPT,
+                                                    NULL);
+
+    GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget *vbox = gtk_vbox_new(FALSE, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
+    gtk_container_add(GTK_CONTAINER(content_area), vbox);
+
+    GtkWidget *heading = gtk_label_new("<b>Sleep mode</b>");
+    gtk_label_set_use_markup(GTK_LABEL(heading), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), heading, FALSE, FALSE, 5);
+
+    SleepDialogData sd;
+    sd.app_data = app_data;
+    sd.minutes = app_data->sleep_minutes;
+
+    GtkWidget *radio_off = gtk_radio_button_new_with_label(NULL, "Deactivate");
+    GSList *group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(radio_off));
+    GtkWidget *radio_timer = gtk_radio_button_new_with_label(group, "Stop after");
+    group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(radio_timer));
+    GtkWidget *radio_eop = gtk_radio_button_new_with_label(group, "Stop at the end of the playlist");
+    sd.radio_timer = radio_timer;
+
+    gtk_box_pack_start(GTK_BOX(vbox), radio_off, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), radio_timer, FALSE, FALSE, 0);
+
+    sd.minutes_label = gtk_label_new(NULL);
+    sleep_refresh_minutes(&sd);
+    GtkWidget *minutes_frame = gtk_frame_new(NULL);
+    gtk_frame_set_shadow_type(GTK_FRAME(minutes_frame), GTK_SHADOW_IN);
+    GtkWidget *minutes_padding = gtk_alignment_new(0.5, 0.5, 0, 0);
+    gtk_alignment_set_padding(GTK_ALIGNMENT(minutes_padding), 4, 4, 10, 10);
+    gtk_container_add(GTK_CONTAINER(minutes_padding), sd.minutes_label);
+    gtk_container_add(GTK_CONTAINER(minutes_frame), minutes_padding);
+
+    GtkWidget *delta_hbox = gtk_hbox_new(FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(delta_hbox), create_sleep_delta_button(&sd, "-10", -10), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(delta_hbox), create_sleep_delta_button(&sd, "-1", -1), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(delta_hbox), minutes_frame, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(delta_hbox), create_sleep_delta_button(&sd, "+1", 1), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(delta_hbox), create_sleep_delta_button(&sd, "+10", 10), FALSE, FALSE, 0);
+
+    // Indent the duration row so it reads as belonging to "Stop after".
+    GtkWidget *delta_indent = gtk_alignment_new(0, 0.5, 0, 0);
+    gtk_alignment_set_padding(GTK_ALIGNMENT(delta_indent), 0, 5, 25, 0);
+    gtk_container_add(GTK_CONTAINER(delta_indent), delta_hbox);
+    gtk_box_pack_start(GTK_BOX(vbox), delta_indent, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(vbox), radio_eop, FALSE, FALSE, 0);
+    // A radio stream has no end of playlist to wait for.
+    gtk_widget_set_sensitive(radio_eop, !app_data->is_radio_mode);
+
+    switch (app_data->sleep_mode) {
+        case SLEEP_TIMER:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(radio_timer), TRUE);
+            break;
+        case SLEEP_END_OF_PLAYLIST:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(radio_eop), TRUE);
+            break;
+        default:
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(radio_off), TRUE);
+            break;
+    }
+
+    gtk_widget_show_all(vbox);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        app_data->sleep_minutes = sd.minutes;
+        if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(radio_timer))) {
+            app_data->sleep_mode = SLEEP_TIMER;
+            app_data->sleep_deadline = time(NULL) + (time_t)sd.minutes * 60;
+            g_print("Sleep: closing KinAMP in %d minutes.\n", sd.minutes);
+        } else if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(radio_eop))) {
+            app_data->sleep_mode = SLEEP_END_OF_PLAYLIST;
+            g_print("Sleep: closing KinAMP at the end of the playlist.\n");
+        } else {
+            app_data->sleep_mode = SLEEP_OFF;
+            g_print("Sleep: deactivated.\n");
+        }
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+// --------------------------------------------------------- About / update check
+
+// Runs a command and returns everything it wrote to stdout.
+static std::string run_command(const std::string &cmd) {
+    std::string output;
+    FILE *pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return output;
+
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        output += buffer;
+    }
+    pclose(pipe);
+    return output;
+}
+
+// Minimal extraction of a "key": "value" pair - enough for the release metadata.
+static std::string json_string_value(const std::string &json, const std::string &key, size_t from = 0) {
+    std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle, from);
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos + needle.size());
+    if (pos == std::string::npos) return "";
+    size_t start = json.find('"', pos);
+    if (start == std::string::npos) return "";
+    size_t end = json.find('"', start + 1);
+    if (end == std::string::npos) return "";
+    return json.substr(start + 1, end - start - 1);
+}
+
+// "2.2" -> {2,2}. Stops at the first part that isn't a number, so "2.1-beta" -> {2,1}.
+static std::vector<int> parse_version(const std::string &version) {
+    std::vector<int> parts;
+    size_t i = 0;
+    while (i < version.size() && !isdigit((unsigned char)version[i])) i++; // skip a leading "v"
+    while (i < version.size()) {
+        if (isdigit((unsigned char)version[i])) {
+            int value = 0;
+            while (i < version.size() && isdigit((unsigned char)version[i])) {
+                value = value * 10 + (version[i++] - '0');
+            }
+            parts.push_back(value);
+        } else if (version[i] == '.') {
+            i++;
+        } else {
+            break;
+        }
+    }
+    return parts;
+}
+
+// Returns true if "candidate" is a newer version than "current".
+static bool version_is_newer(const std::string &candidate, const std::string &current) {
+    std::vector<int> a = parse_version(candidate);
+    std::vector<int> b = parse_version(current);
+    if (a.empty()) return false;
+
+    for (size_t i = 0; i < a.size() || i < b.size(); ++i) {
+        int va = (i < a.size()) ? a[i] : 0;
+        int vb = (i < b.size()) ? b[i] : 0;
+        if (va != vb) return va > vb;
+    }
+    return false;
+}
+
+// Writes a helper script that downloads and unpacks the release once KinAMP is
+// gone, then restarts the player. It cannot be done in-process: the update
+// replaces both the running binary and the launcher script.
+static bool launch_updater(const std::string &url, const std::string &new_version) {
+    const char *script_path = "/mnt/us/kinamp_update.sh";
+
+    gchar *quoted_url = g_shell_quote(url.c_str());
+    gchar *quoted_version = g_shell_quote(new_version.c_str());
+
+    std::ofstream script(script_path);
+    if (!script.is_open()) {
+        g_free(quoted_url);
+        g_free(quoted_version);
+        return false;
+    }
+
+    script <<
+        "#!/bin/sh\n"
+        "# Generated by KinAMP - installs an update and restarts the player.\n"
+        "URL=" << quoted_url << "\n"
+        "NEWVERSION=" << quoted_version << "\n"
+        "ZIP=/mnt/us/kinamp_update.zip\n"
+        "\n"
+        "alert() {\n"
+        "    TEXT=$(printf '%s' \"$1\" | sed 's/\"/\\\\\"/g')\n"
+        "    JSON='{ \"clientParams\":{ \"alertId\":\"appAlert1\", \"show\":true, \"customStrings\":[ "
+        "{ \"matchStr\":\"alertTitle\", \"replaceStr\":\"KinAMP\" }, "
+        "{ \"matchStr\":\"alertText\", \"replaceStr\":\"'\"$TEXT\"'\" } ] } }'\n"
+        "    lipc-set-prop com.lab126.pillow pillowAlert \"$JSON\"\n"
+        "}\n"
+        "\n"
+        "# Wait for KinAMP and its launcher script to exit - both get overwritten.\n"
+        "sleep 5\n"
+        "\n"
+        "wget -q -T 30 --no-check-certificate -O \"$ZIP\" \"$URL\"\n"
+        "if [ ! -s \"$ZIP\" ]; then\n"
+        "    rm -f \"$ZIP\"\n"
+        "    alert \"Update download failed. Please check your Wi-Fi connection.\"\n"
+        "    exit 1\n"
+        "fi\n"
+        "\n"
+        "if unzip -o -q \"$ZIP\" -d /mnt/us; then\n"
+        "    rm -f \"$ZIP\"\n"
+        "    alert \"KinAMP was updated to version $NEWVERSION. Restarting...\"\n"
+        "    cd /mnt/us/KinAMP && exec ./startkinamp.sh\n"
+        "else\n"
+        "    alert \"Could not unpack the update. Extract $ZIP to the root of the Kindle manually.\"\n"
+        "    exit 1\n"
+        "fi\n";
+    script.close();
+
+    g_free(quoted_url);
+    g_free(quoted_version);
+
+    std::string cmd = std::string("/bin/sh ") + script_path + " >/dev/null 2>&1 &";
+    return system(cmd.c_str()) == 0;
+}
+
+struct AboutDialogData {
+    AppData *app_data;
+    GtkWidget *dialog;
+    GtkWidget *status_label;
+    std::string download_url;
+    std::string new_version;
+    bool install_requested;
+};
+
+static void about_set_status(AboutDialogData *ad, const char *text) {
+    gtk_label_set_text(GTK_LABEL(ad->status_label), text);
+    gtk_widget_show(ad->status_label);
+    // Repaint before the blocking download below.
+    while (gtk_events_pending()) gtk_main_iteration();
+}
+
+static void on_check_updates_clicked(GtkWidget *widget, gpointer data) {
+    (void)widget;
+    AboutDialogData *ad = (AboutDialogData*)data;
+
+    about_set_status(ad, "Checking for updates...");
+
+    std::string json = run_command("wget -q -T 15 --no-check-certificate -O - \"" KINAMP_RELEASE_API "\" 2>/dev/null");
+    if (json.empty()) {
+        about_set_status(ad, "Could not reach GitHub.\nPlease check your Wi-Fi connection.");
+        return;
+    }
+
+    std::string tag = json_string_value(json, "tag_name");
+    if (tag.empty()) {
+        about_set_status(ad, "Could not read the release information.");
+        return;
+    }
+
+    if (!version_is_newer(tag, KINAMP_VERSION)) {
+        about_set_status(ad, "KinAMP " KINAMP_VERSION " is up to date.");
+        return;
+    }
+
+    // Find the release archive among the assets.
+    std::string url;
+    size_t from = 0;
+    while (true) {
+        std::string candidate = json_string_value(json, "browser_download_url", from);
+        if (candidate.empty()) break;
+        if (candidate.size() > 4 && candidate.compare(candidate.size() - 4, 4, ".zip") == 0) {
+            url = candidate;
+            break;
+        }
+        from = json.find(candidate, from);
+        from = (from == std::string::npos) ? json.size() : from + candidate.size();
+    }
+
+    if (url.empty()) {
+        std::string msg = "Version " + tag + " is available.\nPlease download it from GitHub.";
+        about_set_status(ad, msg.c_str());
+        return;
+    }
+
+    std::string question = "KinAMP " + tag + " is available (you have " KINAMP_VERSION ").\n\n"
+                           "KinAMP will close, install the update and restart.\n"
+                           "Install it now?";
+    GtkWidget *confirm = gtk_message_dialog_new(GTK_WINDOW(ad->dialog),
+                                                GTK_DIALOG_MODAL,
+                                                GTK_MESSAGE_QUESTION,
+                                                GTK_BUTTONS_YES_NO,
+                                                "%s", question.c_str());
+    gtk_window_set_title(GTK_WINDOW(confirm), "L:D_N:dialog_ID:com.kbarni.kinamp");
+    gint answer = gtk_dialog_run(GTK_DIALOG(confirm));
+    gtk_widget_destroy(confirm);
+
+    if (answer == GTK_RESPONSE_YES) {
+        ad->download_url = url;
+        ad->new_version = tag;
+        ad->install_requested = true;
+        // Leave the About dialog; the update is started once it is destroyed.
+        gtk_dialog_response(GTK_DIALOG(ad->dialog), GTK_RESPONSE_ACCEPT);
+    } else {
+        about_set_status(ad, "");
+    }
+}
+
+void on_info_clicked(GtkWidget *widget, gpointer data) {
+    AppData *app_data = (AppData*)data;
+
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("L:D_N:dialog_ID:com.kbarni.kinamp",
+                                                    GTK_WINDOW(gtk_widget_get_toplevel(widget)),
+                                                    GTK_DIALOG_MODAL,
+                                                    GTK_STOCK_OK, GTK_RESPONSE_ACCEPT,
+                                                    NULL);
+
+    GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget *vbox = gtk_vbox_new(FALSE, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
+    gtk_container_add(GTK_CONTAINER(content_area), vbox);
+
+    GtkWidget *name_label = gtk_label_new("<big><b>KinAMP</b></big>");
+    gtk_label_set_use_markup(GTK_LABEL(name_label), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), name_label, FALSE, FALSE, 5);
+
+    GtkWidget *desc_label = gtk_label_new("Kindle media player\nVersion " KINAMP_VERSION "\n(c) 2026 kbarni");
+    gtk_label_set_justify(GTK_LABEL(desc_label), GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), desc_label, FALSE, FALSE, 5);
+
+    GtkWidget *separator = gtk_hseparator_new();
+    gtk_box_pack_start(GTK_BOX(vbox), separator, FALSE, FALSE, 5);
+
+    GtkWidget *link_label = gtk_label_new(KINAMP_GITHUB_URL);
+    gtk_label_set_selectable(GTK_LABEL(link_label), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), link_label, FALSE, FALSE, 0);
+
+    AboutDialogData ad;
+    ad.app_data = app_data;
+    ad.dialog = dialog;
+    ad.install_requested = false;
+
+    GtkWidget *update_button = gtk_button_new_with_label("Check for updates");
+    gtk_container_set_border_width(GTK_CONTAINER(update_button), 5);
+    GtkWidget *update_align = gtk_alignment_new(0.5, 0.5, 0, 0);
+    gtk_container_add(GTK_CONTAINER(update_align), update_button);
+    gtk_box_pack_start(GTK_BOX(vbox), update_align, FALSE, FALSE, 5);
+
+    ad.status_label = gtk_label_new("");
+    gtk_label_set_justify(GTK_LABEL(ad.status_label), GTK_JUSTIFY_CENTER);
+    gtk_box_pack_start(GTK_BOX(vbox), ad.status_label, FALSE, FALSE, 0);
+
+    g_signal_connect(update_button, "clicked", G_CALLBACK(on_check_updates_clicked), &ad);
+
+    gtk_widget_show_all(vbox);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    if (ad.install_requested) {
+        if (launch_updater(ad.download_url, ad.new_version)) {
+            showLipcDialog("KinAMP", "Downloading the update. KinAMP will restart when it is installed.");
+            quit_app(app_data);
+        } else {
+            showLipcDialog("KinAMP", "Could not start the update.");
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     gtk_init(&argc, &argv);
 
@@ -861,6 +1328,10 @@ int main(int argc, char* argv[]) {
     app_data.flIntensity = 0;
     app_data.dispUpdate=true;
     app_data.is_radio_mode = false;
+    app_data.sleep_mode = SLEEP_OFF;
+    app_data.sleep_minutes = 30;
+    app_data.sleep_deadline = 0;
+    app_data.sleep_quit_pending = false;
 
     backend.set_eos_callback(on_eos_cb, &app_data);
     backend.set_error_callback(on_error_cb, &app_data);
@@ -927,9 +1398,11 @@ int main(int argc, char* argv[]) {
     GtkWidget *repeat_button = create_button_from_icon(app_data.is_hires ? repeat_icon : repeat_icon_lr, btn_padding);
     app_data.repeat_button = repeat_button;
 
+    GtkWidget *sleep_button = create_button_from_icon(app_data.is_hires ? sleep_icon : sleep_icon_lr, btn_padding);
     GtkWidget *dispupdate_button = create_button_from_icon(app_data.is_hires ? display_icon : display_icon_lr, btn_padding);
     GtkWidget *frontlight_button = create_button_from_icon(app_data.is_hires ? sunny_icon : sunny_icon_lr, btn_padding);
     GtkWidget *bluetooth_button = create_button_from_icon(app_data.is_hires ? bluetooth_icon : bluetooth_icon_lr, btn_padding);
+    GtkWidget *info_button = create_button_from_icon(app_data.is_hires ? info_icon : info_icon_lr, btn_padding);
     GtkWidget *background_button = create_button_from_icon(app_data.is_hires ? standby_icon : standby_icon_lr, btn_padding);
     GtkWidget *close_button = create_button_from_icon(app_data.is_hires ? close_icon : close_icon_lr, btn_padding);
 
@@ -941,9 +1414,11 @@ int main(int argc, char* argv[]) {
     g_signal_connect(shuffle_button, "clicked", G_CALLBACK(on_shuffle_clicked), &app_data);
     g_signal_connect(repeat_button, "clicked", G_CALLBACK(on_repeat_clicked), &app_data);
  
+    g_signal_connect(sleep_button, "clicked", G_CALLBACK(on_sleep_clicked), &app_data);
     g_signal_connect(dispupdate_button, "clicked", G_CALLBACK(on_displayUpdate_clicked), &app_data);
     g_signal_connect(frontlight_button, "clicked", G_CALLBACK(on_fl_clicked), &app_data);
     g_signal_connect(bluetooth_button, "clicked", G_CALLBACK(on_bluetooth_clicked), &app_data);
+    g_signal_connect(info_button, "clicked", G_CALLBACK(on_info_clicked), &app_data);
     g_signal_connect(background_button, "clicked", G_CALLBACK(on_background_clicked), &app_data);
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), &app_data);
 
@@ -964,9 +1439,11 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_start(GTK_BOX(controls_hbox), spacer2, TRUE, TRUE, 0);
 
     GtkWidget *right_controls_hbox = gtk_hbox_new(FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(right_controls_hbox), sleep_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_controls_hbox), dispupdate_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_controls_hbox), frontlight_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_controls_hbox), bluetooth_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(right_controls_hbox), info_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_controls_hbox), background_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_controls_hbox), close_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls_hbox), right_controls_hbox, FALSE, FALSE, 0);
@@ -1015,27 +1492,27 @@ int main(int argc, char* argv[]) {
     GtkWidget *add_file_button = create_button_from_icon(app_data.is_hires ? song_add_icon : song_add_icon_lr, btn_padding);
     GtkWidget *add_folder_button = create_button_from_icon(app_data.is_hires ? folder_add_icon : folder_add_icon_lr, btn_padding);
     GtkWidget *clear_playlist_button = create_button_from_icon(app_data.is_hires ? playlist_clear_icon : playlist_clear_icon_lr, btn_padding);
-    GtkWidget *save_button = gtk_button_new_with_label("Save");
+/*    GtkWidget *save_button = gtk_button_new_with_label("Save");
     gtk_container_set_border_width(GTK_CONTAINER(save_button), 5);
     GtkWidget *load_button = gtk_button_new_with_label("Load");
-    gtk_container_set_border_width(GTK_CONTAINER(load_button), 5);
+    gtk_container_set_border_width(GTK_CONTAINER(load_button), 5);*/
 
     g_signal_connect(add_file_button, "clicked", G_CALLBACK(on_add_file_clicked), &app_data);
     g_signal_connect(add_folder_button, "clicked", G_CALLBACK(on_add_folder_clicked), &app_data);
     g_signal_connect(clear_playlist_button, "clicked", G_CALLBACK(on_clear_playlist_clicked), &app_data);
-    g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), &app_data);
-    g_signal_connect(load_button, "clicked", G_CALLBACK(on_load_clicked), &app_data);
+/*    g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), &app_data);
+    g_signal_connect(load_button, "clicked", G_CALLBACK(on_load_clicked), &app_data);*/
 
     gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), add_file_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), add_folder_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), clear_playlist_button, FALSE, FALSE, 0);
 
-    GtkWidget *align_save_load = gtk_alignment_new(1, 0.5, 0, 0);
+/*    GtkWidget *align_save_load = gtk_alignment_new(1, 0.5, 0, 0);
     GtkWidget *save_load_hbox = gtk_hbox_new(FALSE, 5);
     gtk_box_pack_start(GTK_BOX(save_load_hbox), save_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(save_load_hbox), load_button, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(align_save_load), save_load_hbox);
-    gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), align_save_load, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(app_data.music_action_hbox), align_save_load, TRUE, TRUE, 0);*/
 
     // --- Radio Action HBox (Initially Hidden) ---
     app_data.radio_action_hbox = gtk_hbox_new(FALSE, 10);
