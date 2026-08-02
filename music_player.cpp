@@ -9,6 +9,7 @@
 #include <libgen.h>
 #include <random>
 #include <sstream>
+#include <locale>
 #include <ctime>
 #include <cctype>
 
@@ -409,30 +410,21 @@ void quit_app(AppData *app_data) {
     exit(0);
 }
 
-double myatof(std::string s)
-{
-    u_int p=0;
-    double val=0;
-    double e=0.1;
-    u_char c;
-    while(p<s.length()){
-        c=s[p];
-        if(c!='.') {
-            val=val*10+(c-'0');
-            printf("%c %lf\n",c,val);
-        }else{
-            p++;
-            while(p<s.length()){
-                c=s[p];
-                val+=(c-'0')*e;
-                printf("%c %lf\n",c,val);
-                e=e/10;
-                p++;
-            }
-        }
-        p++;
-    }
-    return val;
+// If the line is "key=value", returns the value, otherwise NULL.
+static const char* config_value(const std::string &line, const char *key) {
+    size_t key_len = strlen(key);
+    if (line.compare(0, key_len, key) != 0) return NULL;
+    return line.c_str() + key_len;
+}
+
+// Reads a number the way save_state() wrote it. atof() would follow the current
+// locale and return 0 for "0.75" wherever the decimal separator is a comma.
+static double parse_double(const char *text, double fallback) {
+    std::istringstream stream(text);
+    stream.imbue(std::locale::classic());
+    double value;
+    if (!(stream >> value)) return fallback;
+    return value;
 }
 
 void load_state(AppData *app_data) {
@@ -457,12 +449,12 @@ void load_state(AppData *app_data) {
     if (conffile.is_open()) {
         std::string line;
         while (std::getline(conffile, line)) {
-            printf(line.c_str());printf("\n");
-            if (line.find("current_index=") == 0) {
-                current_index = atoi(line.substr(14).c_str());
+            if (const char *value = config_value(line, "current_index=")) {
+                current_index = atoi(value);
             }
-            if (line.find("playback_strategy=") == 0) {
-                int strategy = atoi(line.substr(18).c_str());
+            if (const char *value = config_value(line, "playback_strategy=")) {
+                int strategy = atoi(value);
+                if (strategy < NORMAL || strategy > RANDOM) strategy = NORMAL;
                 app_data->current_strategy = (PlaybackStrategy)strategy;
                 if (app_data->current_strategy == RANDOM) {
                     set_button_icon(app_data->shuffle_button, app_data->is_hires ? shuffle_on_icon : shuffle_on_icon_lr);
@@ -475,12 +467,13 @@ void load_state(AppData *app_data) {
                     set_button_icon(app_data->repeat_button, app_data->is_hires ? repeat_icon : repeat_icon_lr);
                 }
             }
-            if (line.find("is_radio_mode=") == 0) {
-                app_data->is_radio_mode = (atoi(line.substr(14).c_str()) != 0);
+            if (const char *value = config_value(line, "is_radio_mode=")) {
+                app_data->is_radio_mode = (atoi(value) != 0);
             }
-            if (line.find("volume=") == 0) {
-                double volume = myatof(line.substr(7));
-                printf("Using volume %s, %s, %f\n",line.c_str(),line.substr(7).c_str(),volume);
+            if (const char *value = config_value(line, "volume=")) {
+                double volume = parse_double(value, 1.0);
+                if (volume < 0.0) volume = 0.0;
+                if (volume > 1.0) volume = 1.0;
                 app_data->backend->set_volume(volume);
                 gtk_range_set_value(GTK_RANGE(app_data->volume_slider), volume);
             }
