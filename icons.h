@@ -42,4 +42,5 @@
 #include "assets/sleep_icon-lr.h"
 #include "assets/info_icon.h"
 #include "assets/info_icon-lr.h"
-
+#include "assets/volume_slider_icon.h"
+#include "assets/volume_slider_icon-lr.h"
