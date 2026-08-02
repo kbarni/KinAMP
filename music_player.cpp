@@ -66,6 +66,7 @@ struct AppData {
     GtkWidget *shuffle_button;
     GtkWidget *repeat_button;
     GtkWidget *volume_slider;
+    double volume;
     
     GtkWidget *music_action_hbox;
     GtkWidget *radio_action_hbox;
@@ -350,6 +351,28 @@ std::string get_config_path(const char* filename) {
     return std::string(filename);
 }
 
+// Width of the volume handle. Shared by the drawing and the hit testing so the
+// handle always sits under the point that was touched.
+static double volume_handle_width(double w, double h) {
+    double handle_w = h * 0.30;
+    if (handle_w > w * 0.25) handle_w = w * 0.25;
+    if (handle_w < 6.0) handle_w = 6.0;
+    return handle_w;
+}
+
+// Single entry point for changing the volume: clamps, snaps to the same 0.05
+// steps the GtkScale used, and only repaints when the value really moved.
+void volume_apply(AppData *app_data, double volume) {
+    if (volume < 0.0) volume = 0.0;
+    if (volume > 1.0) volume = 1.0;
+    volume = (int)(volume * 20.0 + 0.5) / 20.0;
+
+    if (volume == app_data->volume) return;
+    app_data->volume = volume;
+    app_data->backend->set_volume(volume);
+    if (app_data->volume_slider) gtk_widget_queue_draw(app_data->volume_slider);
+}
+
 void save_state(AppData *app_data) {
     // Only save music playlist if we are in music mode (or we should preserve it regardless)
     // Actually, playlist is always in playlist_store, even if hidden.
@@ -471,11 +494,7 @@ void load_state(AppData *app_data) {
                 app_data->is_radio_mode = (atoi(value) != 0);
             }
             if (const char *value = config_value(line, "volume=")) {
-                double volume = parse_double(value, 1.0);
-                if (volume < 0.0) volume = 0.0;
-                if (volume > 1.0) volume = 1.0;
-                app_data->backend->set_volume(volume);
-                gtk_range_set_value(GTK_RANGE(app_data->volume_slider), volume);
+                volume_apply(app_data, parse_double(value, 1.0));
             }
         }
         conffile.close();
@@ -737,10 +756,118 @@ void on_displayUpdate_clicked(GtkWidget *widget, gpointer data) {
     app_data->dispUpdate = !(app_data->dispUpdate);
 }
 
-void on_volume_changed(GtkRange *range, gpointer data) {
+
+// Draws the volume control as a wedge that fills up to the handle, for a value
+// between 0 (empty) and 1 (full). Everything is derived from the allocation, so
+// the drawing cannot disagree with the coordinate space it is clipped to. Kept
+// separate from the expose handler so it can be rendered without a live widget.
+static void draw_volume_wedge(cairo_t *cr, const GdkRectangle *alloc, double fraction) {
+    double x = alloc->x;
+    double y = alloc->y;
+    double w = alloc->width;
+    double h = alloc->height;
+    if (w < 4 || h < 4) return;
+
+    // Paint our own background: the theme's grey would show through otherwise.
+    cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+    cairo_rectangle(cr, x, y, w, h);
+    cairo_fill(cr);
+
+    if (fraction < 0.0) fraction = 0.0;
+    if (fraction > 1.0) fraction = 1.0;
+
+    double baseline = y + h * 0.85;        // bottom edge of the wedge
+    double apex     = y + h * 0.25;        // top of the wedge, at its right end
+    double x0 = x;
+    double x1 = x + w;
+
+    double line = h * 0.03;
+    if (line < 1.0) line = 1.0;
+
+    // The handle travels so that it stays inside the allocation at both ends.
+    double handle_w = volume_handle_width(w, h);
+    double cx = (x0 + handle_w / 2.0) + fraction * (w - handle_w);
+    double handle_y = y + h * 0.05;
+    double handle_h = h * 0.90;
+
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_MITER);
+    cairo_set_line_width(cr, line);
+
+    // The wedge, empty.
+    cairo_move_to(cr, x0, baseline);
+    cairo_line_to(cr, x1, baseline);
+    cairo_line_to(cr, x1, apex);
+    cairo_close_path(cr);
+    cairo_set_source_rgb(cr, 0.82, 0.82, 0.82);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+    cairo_stroke(cr);
+
+    // The same wedge again, clipped to the left of the handle: the current level.
+    cairo_save(cr);
+    cairo_rectangle(cr, x0, apex - line, cx - x0, baseline - apex + 2 * line);
+    cairo_clip(cr);
+    cairo_move_to(cr, x0, baseline);
+    cairo_line_to(cr, x1, baseline);
+    cairo_line_to(cr, x1, apex);
+    cairo_close_path(cr);
+    cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);
+    cairo_fill(cr);
+    cairo_restore(cr);
+
+    // The handle, as a rounded rectangle standing proud of the wedge.
+    double hx = cx - handle_w / 2.0;
+    double r = (handle_w < handle_h ? handle_w : handle_h) * 0.25;
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, hx + handle_w - r, handle_y + r,            r, -G_PI_2, 0);
+    cairo_arc(cr, hx + handle_w - r, handle_y + handle_h - r, r, 0,        G_PI_2);
+    cairo_arc(cr, hx + r,            handle_y + handle_h - r, r, G_PI_2,   G_PI);
+    cairo_arc(cr, hx + r,            handle_y + r,            r, G_PI,     3 * G_PI_2);
+    cairo_close_path(cr);
+    cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+    cairo_stroke(cr);
+}
+
+// A GtkScale only accepts input inside its trough, a band the theme fixes at
+// about 18 pixels whatever the widget height, so a tall one is mostly dead to
+// the touchscreen. A drawing area owns its window: it gets events over its whole
+// area, and drawing is in plain widget-local coordinates.
+static gboolean on_volume_slider_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
+    (void)event;
     AppData *app_data = (AppData*)data;
-    double volume = gtk_range_get_value(range);
-    app_data->backend->set_volume(volume);
+
+    GtkAllocation alloc;
+    gtk_widget_get_allocation(widget, &alloc);
+    GdkRectangle local = { 0, 0, alloc.width, alloc.height };
+
+    cairo_t *cr = gdk_cairo_create(gtk_widget_get_window(widget));
+    draw_volume_wedge(cr, &local, app_data->volume);
+    cairo_destroy(cr);
+
+    return TRUE;
+}
+
+static void volume_set_from_x(AppData *app_data, double x) {
+    GtkAllocation alloc;
+    gtk_widget_get_allocation(app_data->volume_slider, &alloc);
+
+    double handle_w = volume_handle_width(alloc.width, alloc.height);
+    double travel = alloc.width - handle_w;
+    volume_apply(app_data, (travel > 0.0) ? (x - handle_w / 2.0) / travel : 0.0);
+}
+
+static gboolean on_volume_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+    (void)widget;
+    volume_set_from_x((AppData*)data, event->x);
+    return TRUE;
+}
+
+static gboolean on_volume_motion(GtkWidget *widget, GdkEventMotion *event, gpointer data) {
+    (void)widget;
+    volume_set_from_x((AppData*)data, event->x);
+    return TRUE;
 }
 
 void on_add_file_clicked(GtkWidget *widget, gpointer data) {
@@ -964,6 +1091,28 @@ struct SleepDialogData {
     int minutes;
 };
 
+// GTK draws the radio indicator at 13 pixels by default, which is hard to make
+// out on an eink screen. GtkCheckButton exposes the size as a style property, so
+// a bigger one can be asked for by name instead of drawing the indicators by hand.
+static void apply_big_radio_style(bool is_hires) {
+    static bool applied = false;
+    if (applied) return;
+    applied = true;
+
+    char rc[512];
+    snprintf(rc, sizeof(rc),
+             "style \"kinamp-radio\" {\n"
+             "  GtkCheckButton::indicator-size = %d\n"
+             "  GtkCheckButton::indicator-spacing = %d\n"
+             "  font_name = \"%s\"\n"
+             "}\n"
+             "widget \"*kinamp-radio*\" style \"kinamp-radio\"\n",
+             is_hires ? 40 : 22,
+             is_hires ? 8 : 4,
+             is_hires ? "Sans 14" : "Sans 10");
+    gtk_rc_parse_string(rc);
+}
+
 static void sleep_refresh_minutes(SleepDialogData *sd) {
     char markup[64];
     snprintf(markup, sizeof(markup), "<b>%d min</b>", sd->minutes);
@@ -994,6 +1143,8 @@ static GtkWidget* create_sleep_delta_button(SleepDialogData *sd, const char *lab
 void on_sleep_clicked(GtkWidget *widget, gpointer data) {
     AppData *app_data = (AppData*)data;
 
+    apply_big_radio_style(app_data->is_hires);
+
     GtkWidget *dialog = gtk_dialog_new_with_buttons("L:D_N:dialog_ID:com.kbarni.kinamp",
                                                     GTK_WINDOW(gtk_widget_get_toplevel(widget)),
                                                     GTK_DIALOG_MODAL,
@@ -1019,6 +1170,11 @@ void on_sleep_clicked(GtkWidget *widget, gpointer data) {
     group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(radio_timer));
     GtkWidget *radio_eop = gtk_radio_button_new_with_label(group, "Stop at the end of the playlist");
     sd.radio_timer = radio_timer;
+
+    // Matches the "kinamp-radio" rc style set up above.
+    gtk_widget_set_name(radio_off, "kinamp-radio");
+    gtk_widget_set_name(radio_timer, "kinamp-radio");
+    gtk_widget_set_name(radio_eop, "kinamp-radio");
 
     gtk_box_pack_start(GTK_BOX(vbox), radio_off, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), radio_timer, FALSE, FALSE, 0);
@@ -1364,6 +1520,8 @@ int main(int argc, char* argv[]) {
     app_data.flIntensity = 0;
     app_data.dispUpdate=true;
     app_data.is_radio_mode = false;
+    app_data.volume_slider = NULL;
+    app_data.volume = 1.0;
     app_data.sleep_mode = SLEEP_OFF;
     app_data.sleep_minutes = 30;
     app_data.sleep_deadline = 0;
@@ -1480,11 +1638,12 @@ int main(int argc, char* argv[]) {
     g_object_unref(vol_pixbuf);
     gtk_box_pack_start(GTK_BOX(controls_hbox), vol_icon, FALSE, FALSE, 5);
 
-    app_data.volume_slider = gtk_hscale_new_with_range(0, 1, 0.05);
-    gtk_scale_set_draw_value(GTK_SCALE(app_data.volume_slider), FALSE);
-    gtk_widget_set_size_request(app_data.volume_slider, app_data.is_hires ? 200 : 100, app_data.is_hires ? 100 : 30);
-    gtk_range_set_value(GTK_RANGE(app_data.volume_slider), 1.0);
-    g_signal_connect(app_data.volume_slider, "value-changed", G_CALLBACK(on_volume_changed), &app_data);
+    app_data.volume_slider = gtk_drawing_area_new();
+    gtk_widget_set_size_request(app_data.volume_slider, app_data.is_hires ? 200 : 100, app_data.is_hires ? 70 : 21);
+    gtk_widget_add_events(app_data.volume_slider, GDK_BUTTON_PRESS_MASK | GDK_BUTTON1_MOTION_MASK);
+    g_signal_connect(app_data.volume_slider, "expose-event", G_CALLBACK(on_volume_slider_expose), &app_data);
+    g_signal_connect(app_data.volume_slider, "button-press-event", G_CALLBACK(on_volume_button_press), &app_data);
+    g_signal_connect(app_data.volume_slider, "motion-notify-event", G_CALLBACK(on_volume_motion), &app_data);
     gtk_box_pack_start(GTK_BOX(controls_hbox), app_data.volume_slider, FALSE, FALSE, 5);
 
 
