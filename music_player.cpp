@@ -562,6 +562,16 @@ void set_label_font(GtkWidget *label, const char *font_desc_str) {
     pango_font_description_free(font_desc);
 }
 
+// Enlarges a label relative to whatever the theme uses, so the dialogs stay
+// readable in both resolutions without a hardcoded point size. Unlike markup,
+// the attribute survives a later gtk_label_set_text().
+void scale_label_font(GtkWidget *label, double scale) {
+    PangoAttrList *attrs = pango_attr_list_new();
+    pango_attr_list_insert(attrs, pango_attr_scale_new(scale));
+    gtk_label_set_attributes(GTK_LABEL(label), attrs);
+    pango_attr_list_unref(attrs);
+}
+
 void add_directory_to_playlist(const char *dir_path, GtkListStore *playlist_store) {
     DIR *dir = opendir(dir_path);
     if (dir == NULL) {
@@ -1158,6 +1168,7 @@ void on_sleep_clicked(GtkWidget *widget, gpointer data) {
 
     GtkWidget *heading = gtk_label_new("<b>Sleep mode</b>");
     gtk_label_set_use_markup(GTK_LABEL(heading), TRUE);
+    scale_label_font(heading, PANGO_SCALE_X_LARGE);
     gtk_box_pack_start(GTK_BOX(vbox), heading, FALSE, FALSE, 5);
 
     SleepDialogData sd;
@@ -1458,10 +1469,12 @@ void on_info_clicked(GtkWidget *widget, gpointer data) {
 
     GtkWidget *name_label = gtk_label_new("<big><b>KinAMP</b></big>");
     gtk_label_set_use_markup(GTK_LABEL(name_label), TRUE);
+    scale_label_font(name_label, PANGO_SCALE_LARGE);
     gtk_box_pack_start(GTK_BOX(vbox), name_label, FALSE, FALSE, 5);
 
     GtkWidget *desc_label = gtk_label_new("Kindle media player\nVersion " KINAMP_VERSION "\n(c) 2026 kbarni");
     gtk_label_set_justify(GTK_LABEL(desc_label), GTK_JUSTIFY_CENTER);
+    scale_label_font(desc_label, PANGO_SCALE_LARGE);
     gtk_box_pack_start(GTK_BOX(vbox), desc_label, FALSE, FALSE, 5);
 
     GtkWidget *separator = gtk_hseparator_new();
@@ -1469,6 +1482,7 @@ void on_info_clicked(GtkWidget *widget, gpointer data) {
 
     GtkWidget *link_label = gtk_label_new(KINAMP_GITHUB_URL);
     gtk_label_set_selectable(GTK_LABEL(link_label), TRUE);
+    scale_label_font(link_label, PANGO_SCALE_LARGE);
     gtk_box_pack_start(GTK_BOX(vbox), link_label, FALSE, FALSE, 0);
 
     AboutDialogData ad;
@@ -1478,12 +1492,14 @@ void on_info_clicked(GtkWidget *widget, gpointer data) {
 
     GtkWidget *update_button = gtk_button_new_with_label("Check for updates");
     gtk_container_set_border_width(GTK_CONTAINER(update_button), 5);
+    scale_label_font(gtk_bin_get_child(GTK_BIN(update_button)), PANGO_SCALE_LARGE);
     GtkWidget *update_align = gtk_alignment_new(0.5, 0.5, 0, 0);
     gtk_container_add(GTK_CONTAINER(update_align), update_button);
     gtk_box_pack_start(GTK_BOX(vbox), update_align, FALSE, FALSE, 5);
 
     ad.status_label = gtk_label_new("");
     gtk_label_set_justify(GTK_LABEL(ad.status_label), GTK_JUSTIFY_CENTER);
+    scale_label_font(ad.status_label, PANGO_SCALE_LARGE);
     gtk_box_pack_start(GTK_BOX(vbox), ad.status_label, FALSE, FALSE, 0);
 
     g_signal_connect(update_button, "clicked", G_CALLBACK(on_check_updates_clicked), &ad);
