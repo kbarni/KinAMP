@@ -1,4 +1,5 @@
 #include "music_backend.h"
+#include "tags.h"
 #include <glib.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -725,6 +726,16 @@ void MusicBackend::read_metadata(const char* filepath) {
         }
         mp4config.verbose.tags = 0;
     } else if (format == AudioFormat::MINIAUDIO) {
+        // miniaudio has no tag API, so ID3 and Vorbis comments are parsed
+        // separately. Missing tags stay empty and the UI falls back to the
+        // file name.
+        AudioTags tags;
+        if (read_audio_tags(filepath, &tags)) {
+            meta_title = tags.title;
+            meta_artist = tags.artist;
+            meta_album = tags.album;
+        }
+
         ma_decoder_config decoder_config = ma_decoder_config_init(ma_format_s16, 2, 0);
         ma_decoder temp_decoder;
         ma_result result = ma_decoder_init_file(filepath, &decoder_config, &temp_decoder);

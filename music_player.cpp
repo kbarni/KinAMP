@@ -249,6 +249,23 @@ void on_eos_cb(void* user_data) {
 }
 
 
+// What to show in the now playing label: the tags when the file carries them,
+// otherwise the file name as before. The backend fills the meta_* fields in
+// play_file(), so this is only meaningful for the track currently loaded.
+static std::string now_playing_label(MusicBackend *backend, const char *full_path) {
+    const std::string &title = backend->meta_title;
+    const std::string &artist = backend->meta_artist;
+
+    if (!title.empty()) {
+        return artist.empty() ? title : artist + " - " + title;
+    }
+
+    char *path_copy = g_strdup(full_path);
+    std::string name = basename(path_copy);
+    g_free(path_copy);
+    return name;
+}
+
 gboolean update_progress_cb(gpointer data) {
     AppData *app_data = (AppData*)data;
 
@@ -316,14 +333,12 @@ gboolean update_progress_cb(gpointer data) {
         if (!app_data->is_radio_mode) {
             const char* full_path = app_data->backend->get_current_filepath();
             if (full_path && strlen(full_path) > 0) {
-                char* path_copy = g_strdup(full_path);
-                char* base = basename(path_copy);
-                
-                if (app_data->last_title != base) {
-                    gtk_label_set_text(app_data->song_title_label, base);
-                    app_data->last_title = base;
+                std::string title = now_playing_label(app_data->backend, full_path);
+
+                if (app_data->last_title != title) {
+                    gtk_label_set_text(app_data->song_title_label, title.c_str());
+                    app_data->last_title = title;
                 }
-                g_free(path_copy);
             }
         }
 
@@ -659,13 +674,10 @@ void play_selected_song(AppData* app_data) {
             gtk_tree_model_get(model, &iter, 0, &file_path, -1);
             if (file_path) {
                 app_data->backend->play_file(file_path);
-                char* path_copy = g_strdup(file_path);
-                char* base = basename(path_copy);
-                gtk_label_set_text(app_data->song_title_label, base);
+                std::string title = now_playing_label(app_data->backend, file_path);
+                gtk_label_set_text(app_data->song_title_label, title.c_str());
+                app_data->last_title = title;
 
-                app_data->last_title = base;
-                
-                g_free(path_copy);
                 g_free(file_path);
             }
         }
