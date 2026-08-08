@@ -1,5 +1,6 @@
 #include <gtk/gtk.h>
 #include <cstring>
+#include <strings.h>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -572,6 +573,36 @@ void scale_label_font(GtkWidget *label, double scale) {
     pango_attr_list_unref(attrs);
 }
 
+// Everything music_backend can decode: miniaudio handles the first four, FAAD
+// the MP4 container ones. Keep this in sync with detect_format_helper() in
+// music_backend.cpp - it is the single list both the folder scan and the file
+// chooser below consult, so they can't drift apart.
+static const char *SUPPORTED_EXTENSIONS[] = {
+    ".mp3", ".flac", ".wav", ".ogg", ".m4a", ".m4b", ".mp4"
+};
+
+// Matched case-insensitively: files ripped elsewhere or copied off other devices
+// routinely arrive as .MP3 or .Flac, and those used to be silently skipped.
+static bool has_supported_extension(const char *filename) {
+    const char *ext = strrchr(filename, '.');
+    if (ext == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < G_N_ELEMENTS(SUPPORTED_EXTENSIONS); ++i) {
+        if (strcasecmp(ext, SUPPORTED_EXTENSIONS[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// GTK2's pattern filters are case-sensitive glob, so a custom matcher is the
+// only way to get .MP3 to show up alongside .mp3 in the file chooser.
+static gboolean music_file_filter(const GtkFileFilterInfo *info, gpointer data) {
+    (void)data;
+    return (info->filename != NULL && has_supported_extension(info->filename)) ? TRUE : FALSE;
+}
+
 void add_directory_to_playlist(const char *dir_path, GtkListStore *playlist_store) {
     DIR *dir = opendir(dir_path);
     if (dir == NULL) {
@@ -588,8 +619,7 @@ void add_directory_to_playlist(const char *dir_path, GtkListStore *playlist_stor
             }
         }
         else {
-            const char *ext = strrchr(entry->d_name, '.');
-            if (ext && (strcmp(ext, ".mp3") == 0 || strcmp(ext, ".flac") == 0 || strcmp(ext, ".wav") == 0)) {
+            if (has_supported_extension(entry->d_name)) {
                 files.push_back(std::string(dir_path) + "/" + entry->d_name);
             }
         }
@@ -894,9 +924,7 @@ void on_add_file_clicked(GtkWidget *widget, gpointer data) {
 
     GtkFileFilter *filter = gtk_file_filter_new();
     gtk_file_filter_set_name(filter, "Music files");
-    gtk_file_filter_add_pattern(filter, "*.mp3");
-    gtk_file_filter_add_pattern(filter, "*.flac");
-    gtk_file_filter_add_pattern(filter, "*.wav");
+    gtk_file_filter_add_custom(filter, GTK_FILE_FILTER_FILENAME, music_file_filter, NULL, NULL);
     gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {

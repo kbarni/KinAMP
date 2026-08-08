@@ -10,6 +10,7 @@ Supported audio formats:
 - MP3
 - FLAC
 - WAV
+- OGG (Vorbis)
 - AAC
 
 Features
