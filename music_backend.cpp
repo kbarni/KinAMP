@@ -20,8 +20,17 @@ extern "C" {
 #include "mpeg4/mp4read.h"
 }
 
+// Vorbis/OGG support. miniaudio has no built-in Vorbis decoder; it enables one
+// (MA_HAS_VORBIS) only if stb_vorbis is visible in the same translation unit.
+// The declarations must come before miniaudio.h and the implementation after it.
+#define STB_VORBIS_HEADER_ONLY
+#include "miniaudio/extras/stb_vorbis.c"
+#undef STB_VORBIS_HEADER_ONLY
+
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio/miniaudio.h"
+
+#include "miniaudio/extras/stb_vorbis.c"
 
 // Global mutex to protect the non-reentrant mp4read library
 static std::mutex mp4_mutex;

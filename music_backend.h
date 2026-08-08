@@ -24,7 +24,7 @@ struct Chapter {
 enum class AudioFormat {
     UNKNOWN,
     M4B_AAC,    // M4A/M4B MP4 Container (FAAD + mp4read)
-    MINIAUDIO,  // MP3, FLAC, WAV (miniaudio)
+    MINIAUDIO,  // MP3, FLAC, WAV, OGG/Vorbis (miniaudio)
     AAC_ADTS    // Raw AAC stream (FAAD) - Future support
 };
 
