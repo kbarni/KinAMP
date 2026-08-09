@@ -9,10 +9,15 @@ KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "Ki
 KINAMP_DIR=/mnt/us/KinAMP
 STATUS_FILE="$KINAMP_DIR/.kinamp_status"
 
-# /proc/<pid>/comm is truncated to 15 characters, so a plain `pgrep
-# KinAMP-minimal-armel` never matches on PW2 and background playback went
-# undetected there. Prefer the pid the player publishes in its status file and
-# fall back to a full-cmdline match.
+# Prefer the pid the player publishes in its status file.
+#
+# The fallback has to match the process name, not the command line: /proc/<pid>/comm
+# is truncated to 15 characters, so a plain `pgrep KinAMP-minimal-armel` never
+# matches on PW2, but `pgrep -f` is worse - it matches any process whose
+# arguments merely mention the binary, including the shell invoking this script.
+# Killing that leaves the real player running while a second one starts, and two
+# players then fight over the same status file and command FIFO. So match the
+# truncated name exactly.
 background_pid() {
     if [ -f "$STATUS_FILE" ]; then
         pid=$(sed -n 's/^pid=//p' "$STATUS_FILE" | head -n 1)
@@ -21,7 +26,7 @@ background_pid() {
             return 0
         fi
     fi
-    pgrep -f "$KINAMPMIN" 2>/dev/null | head -n 1
+    pgrep -x "$(printf '%s' "$KINAMPMIN" | cut -c1-15)" 2>/dev/null | head -n 1
 }
 
 # SIGTERM is handled by the player: it stops playback and removes its command

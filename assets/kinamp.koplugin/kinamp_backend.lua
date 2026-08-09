@@ -320,11 +320,38 @@ function Backend.play_radio(url)
     return false
 end
 
--- Play M3U Playlist (External)
-function Backend.play_playlist_file(path)
-    if Backend.send("load " .. path, "index 0") then return true end
-    launch("--music " .. Backend.shell_escape(path))
-    return false
+--- Reads an m3u/m3u8 file into a list of playable paths.
+-- Mirrors the player's own parsing (load_playlist in cli_player.cpp):
+-- #EXTM3U/#EXTINF directives are not paths, CRLF endings would otherwise leave
+-- a stray CR inside the file name, and relative entries are relative to the
+-- playlist's own directory - so they are resolved here, while we still know
+-- where the playlist came from. Callers store the result as the internal queue,
+-- which lives elsewhere and would no longer be a valid base for them.
+function Backend.read_m3u(path)
+    local entries = {}
+    local f = io.open(path, "r")
+    if not f then
+        Backend.log("Cannot open playlist: " .. tostring(path))
+        return entries
+    end
+
+    local base = path:match("^(.*/)") or ""
+
+    for line in f:lines() do
+        line = line:gsub("[\r\n]+$", "")
+        if line ~= "" and line:sub(1, 1) ~= "#" then
+            local is_absolute = line:sub(1, 1) == "/"
+            local is_url = line:find("://", 1, true) ~= nil
+            if not is_absolute and not is_url and base ~= "" then
+                line = base .. line
+            end
+            table.insert(entries, line)
+        end
+    end
+    f:close()
+
+    Backend.log(string.format("read_m3u: %d entries from %s", #entries, tostring(path)))
+    return entries
 end
 
 -- Play Internal Queue (starts from beginning)

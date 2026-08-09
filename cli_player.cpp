@@ -66,19 +66,41 @@ static void write_status(CliState* state);
 static void play_index(CliState* state, int index);
 
 // --- Helper: Load Playlist ---
+// Decides whether an m3u line names a track, and cleans it up in place.
+// Playlists written elsewhere carry #EXTM3U/#EXTINF directives, which are not
+// paths, and often use CRLF line endings, whose trailing CR would otherwise
+// become part of the file name and make every entry unopenable.
+// (music_player.cpp has the same helper; the CLI player never got it.)
+static bool m3u_entry(std::string* line) {
+    while (!line->empty() && (*line->rbegin() == '\r' || *line->rbegin() == '\n')) {
+        line->erase(line->size() - 1);
+    }
+    return !line->empty() && (*line)[0] != '#';
+}
+
 bool load_playlist(const std::string& filepath, std::vector<std::string>& playlist) {
     std::ifstream infile(filepath.c_str());
     if (!infile.is_open()) return false;
 
+    // Relative entries in an m3u are relative to the playlist's own directory,
+    // not to our working directory (the install dir), so they have to be
+    // rebased or nothing in a playlist saved next to the music will open.
+    std::string base;
+    size_t slash = filepath.find_last_of('/');
+    if (slash != std::string::npos) {
+        base = filepath.substr(0, slash + 1);
+    }
+
     std::string line;
     while (std::getline(infile, line)) {
-        if (!line.empty()) {
-            // Basic trimming
-            if (line[line.length()-1] == '\r') {
-                line.erase(line.length()-1);
-            }
-            playlist.push_back(line);
+        if (!m3u_entry(&line)) continue;
+
+        bool is_absolute = line[0] == '/';
+        bool is_url = line.find("://") != std::string::npos;
+        if (!is_absolute && !is_url && !base.empty()) {
+            line = base + line;
         }
+        playlist.push_back(line);
     }
     return true;
 }

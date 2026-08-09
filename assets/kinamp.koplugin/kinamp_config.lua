@@ -21,6 +21,10 @@ end
 local bin_folder = find_bin_folder()
 
 local function find_music_dir()
+    local env_dir = os.getenv("KINAMP_MUSIC_DIR")
+    if env_dir and lfs.attributes(env_dir, "mode") == "directory" then
+        return env_dir
+    end
     if lfs.attributes("/mnt/us/music", "mode") == "directory" then
         return "/mnt/us/music"
     end

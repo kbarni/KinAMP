@@ -1,7 +1,7 @@
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local Dispatcher = require("dispatcher")
-local FileChooser = require("ui/widget/filechooser")
+local PathChooser = require("ui/widget/pathchooser")
 local InfoMessage = require("ui/widget/infomessage")
 local KinAMPPlayer = require("kinamp_player")
 local Backend = require("kinamp_backend")
@@ -185,7 +185,6 @@ function KinAMP:getLibrarySubmenu()
 end
 
 function KinAMP:chooseFolder(touchmenu_instance)
-    local PathChooser = require("ui/widget/pathchooser")
     local path_chooser
     path_chooser = PathChooser:new{
         select_directory = true,
@@ -212,26 +211,34 @@ function KinAMP:chooseFolder(touchmenu_instance)
 end
 
 function KinAMP:chooseM3U()
-    local file_chooser
-    file_chooser = FileChooser:new{
+    UIManager:show(PathChooser:new{
+        title = _("Long-press a playlist to choose it"),
         path = Config.music_dir,
-        select_dirs = false,
-        select_files = true,
-        title = _("Select Playlist"),
-        filter_func = function(name)
-            return name:lower():match("%.m3u$") or name:lower():match("%.m3u8$")
+        select_directory = false,
+        select_file = true,
+        show_files = true,
+        file_filter = function(filename)
+            local name = filename:lower()
+            return name:match("%.m3u$") ~= nil or name:match("%.m3u8$") ~= nil
         end,
-        on_confirm = function(path)
-            local sent = Backend.play_playlist_file(path)
-            UIManager:show(InfoMessage:new{text=_("Starting playlist..."),timeout=2})
+        -- PathChooser closes itself once this returns; closing it here as well
+        -- would be a double close.
+        onConfirm = function(path)
+            local entries = Backend.read_m3u(path)
+            if #entries == 0 then
+                UIManager:show(InfoMessage:new{text=_("No playable entries in that playlist."),timeout=2})
+                return
+            end
+            -- The chosen playlist becomes the internal queue, so the player's
+            -- playlist view and the running daemon always describe the same
+            -- list. Playing it without this leaves the two disagreeing.
+            self.current_playlist = entries
+            local sent = Backend.play_internal_queue(entries)
+            UIManager:show(InfoMessage:new{
+                text = string.format(_("Playing %d tracks."), #entries), timeout = 2})
             self:verifyPlayback(sent)
-            UIManager:close(file_chooser)
         end,
-        on_cancel = function()
-            UIManager:close(file_chooser)
-        end
-    }
-    UIManager:show(file_chooser)
+    })
 end
 
 return KinAMP
