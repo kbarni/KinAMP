@@ -34,6 +34,7 @@ local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
+local VerticalSlider = require("kinamp_slider")
 local Backend = require("kinamp_backend")
 local logger = require("logger")
 local _ = require("gettext")
@@ -104,11 +105,18 @@ function KinAMPPlayer:init()
         screen_w - 2 * Size.margin.default)
     local inner_width = self.frame_width - 2 * (border_size + padding)
 
+    -- The volume column runs down the right edge; everything else lives in what
+    -- is left of the dialog, so the two never overlap and the cover stays
+    -- centred on its own column rather than on the frame.
+    local volume_width = Screen:scaleBySize(32)
+    local volume_gap = Size.padding.large
+    local content_width = inner_width - volume_width - volume_gap
+
     -- Icon sizes: the play button is deliberately larger, it is the one control
     -- you aim for without looking.
     local main_button = Screen:scaleBySize(60)
     local side_button = Screen:scaleBySize(38)
-    local cover_size = math.floor(inner_width * 0.60)
+    local cover_size = math.floor(content_width * 0.60)
 
     if Device:hasKeys() then
         self.key_events.Close = { { Device.input.group.Back } }
@@ -136,7 +144,7 @@ function KinAMPPlayer:init()
     -- Kept in its own container so a new track can swap the image without
     -- disturbing anything around it.
     self.cover_container = CenterContainer:new{
-        dimen = Geom:new{ w = inner_width, h = cover_size },
+        dimen = Geom:new{ w = content_width, h = cover_size },
         self:buildCover(nil, cover_size),
     }
     self.cover_size = cover_size
@@ -151,13 +159,13 @@ function KinAMPPlayer:init()
     self.artist_text = TextWidget:new{
         text = "",
         face = Font:getFace("cfont", 17),
-        max_width = inner_width,
+        max_width = content_width,
     }
     self.title_text = TextWidget:new{
         text = _("Not playing"),
         face = Font:getFace("tfont", 21),
         bold = true,
-        max_width = inner_width,
+        max_width = content_width,
     }
     self.info_frame = FrameContainer:new{
         bordersize = 0,
@@ -166,12 +174,12 @@ function KinAMPPlayer:init()
         VerticalGroup:new{
             align = "center",
             CenterContainer:new{
-                dimen = Geom:new{ w = inner_width, h = self.artist_text:getSize().h },
+                dimen = Geom:new{ w = content_width, h = self.artist_text:getSize().h },
                 self.artist_text,
             },
             VerticalSpan:new{ width = Size.padding.small },
             CenterContainer:new{
-                dimen = Geom:new{ w = inner_width, h = self.title_text:getSize().h },
+                dimen = Geom:new{ w = content_width, h = self.title_text:getSize().h },
                 self.title_text,
             },
         },
@@ -179,7 +187,7 @@ function KinAMPPlayer:init()
 
     -- --- Progress --------------------------------------------------------
     self.progress_bar = ProgressWidget:new{
-        width = inner_width,
+        width = content_width,
         height = Screen:scaleBySize(10),
         percentage = 0,
         margin_h = 0,
@@ -202,7 +210,7 @@ function KinAMPPlayer:init()
         VerticalSpan:new{ width = Size.padding.small },
         HorizontalGroup:new{
             self.elapsed_text,
-            HorizontalSpan:new{ width = inner_width - self.elapsed_text:getSize().w
+            HorizontalSpan:new{ width = content_width - self.elapsed_text:getSize().w
                                         - self.total_text:getSize().w },
             self.total_text,
         },
@@ -254,7 +262,7 @@ function KinAMPPlayer:init()
     for _, b in ipairs(buttons) do
         buttons_width = buttons_width + b:getSize().w
     end
-    local gap = math.max(0, math.floor((inner_width - buttons_width) / (#buttons - 1)))
+    local gap = math.max(0, math.floor((content_width - buttons_width) / (#buttons - 1)))
 
     local controls = HorizontalGroup:new{ align = "center" }
     for i, b in ipairs(buttons) do
@@ -270,7 +278,50 @@ function KinAMPPlayer:init()
         controls,
     }
 
+    -- --- Volume ----------------------------------------------------------
+    -- Sits beside the cover: high enough to be a comfortable target, short
+    -- enough to leave the artwork the widest thing in the dialog.
+    self.volume_label = TextWidget:new{
+        text = _("VOL"),
+        face = Font:getFace("xx_smallinfofont"),
+    }
+    local label_height = self.volume_label:getSize().h
+    self.volume_slider = VerticalSlider:new{
+        width = volume_width,
+        height = cover_size - label_height - Size.padding.small,
+    }
+    self.volume_frame = FrameContainer:new{
+        bordersize = 0,
+        padding = 0,
+        margin = 0,
+        VerticalGroup:new{
+            align = "center",
+            CenterContainer:new{
+                dimen = Geom:new{ w = volume_width, h = label_height },
+                self.volume_label,
+            },
+            VerticalSpan:new{ width = Size.padding.small },
+            self.volume_slider,
+        },
+    }
+
     -- --- Assembly --------------------------------------------------------
+    local body = HorizontalGroup:new{
+        align = "top",
+        VerticalGroup:new{
+            align = "center",
+            self.cover_frame,
+            VerticalSpan:new{ width = Size.padding.large },
+            self.info_frame,
+            VerticalSpan:new{ width = Size.padding.large },
+            self.progress_frame,
+            VerticalSpan:new{ width = Size.padding.large },
+            self.controls_frame,
+        },
+        HorizontalSpan:new{ width = volume_gap },
+        self.volume_frame,
+    }
+
     self.frame = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = border_size,
@@ -281,13 +332,7 @@ function KinAMPPlayer:init()
             align = "center",
             self.title_bar,
             VerticalSpan:new{ width = Size.padding.large },
-            self.cover_frame,
-            VerticalSpan:new{ width = Size.padding.large },
-            self.info_frame,
-            VerticalSpan:new{ width = Size.padding.large },
-            self.progress_frame,
-            VerticalSpan:new{ width = Size.padding.large },
-            self.controls_frame,
+            body,
         },
     }
 
@@ -359,6 +404,7 @@ function KinAMPPlayer:doRefresh(force)
     local repaint_info = false
     local repaint_progress = false
     local repaint_play = false
+    local repaint_volume = false
 
     -- Track identity: path covers both files and stream URLs.
     local track_changed = not last or last.path ~= (status and status.path)
@@ -372,6 +418,9 @@ function KinAMPPlayer:doRefresh(force)
             self.progress_group[1] = self.progress_blank
             self.elapsed_text:setText("0:00")
             self.total_text:setText("0:00")
+            -- A player that is not running has no volume to show; the next one
+            -- to start comes up at full, which is what the knob now says.
+            self.volume_slider:setPercentage(1)
             repaint_all = true
         end
         if self.play_button:setIconFile("play.svg") then repaint_all = true end
@@ -430,6 +479,14 @@ function KinAMPPlayer:doRefresh(force)
             repaint_progress = true
         end
 
+        -- Volume: the knob follows the player, but only when what the player
+        -- reports actually changes. A tap moves the knob immediately and the
+        -- next poll or two can still carry the old value; adopting every report
+        -- would snap it back before the player has caught up.
+        if status.vol and (not last or last.vol ~= status.vol) then
+            repaint_volume = self.volume_slider:setPercentage(status.vol / 100)
+        end
+
         repaint_play = self.play_button:setIconFile(
             status.is_playing and "pause.svg" or "play.svg")
 
@@ -441,6 +498,7 @@ function KinAMPPlayer:doRefresh(force)
     else
         if repaint_info then self:refreshRegion(self.info_frame) end
         if repaint_play then self:refreshRegion(self.controls_frame) end
+        if repaint_volume then self:refreshRegion(self.volume_slider) end
         -- The position tick is the only thing that happens every second, so it
         -- gets the cheapest refresh we have.
         if repaint_progress then self:refreshRegion(self.progress_frame, "fast") end
@@ -578,7 +636,30 @@ end
 -- Events
 --=============================================================================
 
+--- Moves the volume to wherever the slider was tapped.
+-- The knob only follows if the player took the command: with nothing listening
+-- there is no volume to change, and a knob that moved anyway would be claiming
+-- otherwise.
+function KinAMPPlayer:setVolumeAt(y)
+    local pct = self.volume_slider:percentageAt(y)
+    -- Rounded, not truncated: the slider works in whole percent, and 0.29 * 100
+    -- is 28.999... in binary, which would send a value one below the knob and
+    -- have the next poll drag it back down.
+    if not Backend.set_volume(math.floor(pct * 100 + 0.5)) then return end
+    if self.volume_slider:setPercentage(pct) then
+        self:refreshRegion(self.volume_slider, "fast")
+    end
+end
+
 function KinAMPPlayer:onTap(arg, ges)
+    -- Volume first: its column overlaps nothing else, and it is checked before
+    -- the tap-outside-to-close rule below.
+    local slider = self.volume_slider.dimen
+    if slider and ges.pos:intersectWith(slider) then
+        self:setVolumeAt(ges.pos.y)
+        return true
+    end
+
     -- Tapping the progress bar seeks, which is the whole reason the player
     -- publishes a position at all. Only when the bar is the widget currently in
     -- the layout: on radio it is swapped out, and its dimen would be a stale

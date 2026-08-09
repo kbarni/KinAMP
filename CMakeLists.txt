@@ -39,6 +39,22 @@ endif()
 # liblipc only exists on the Kindle; without it the GTK player cannot be built.
 find_library(LIPC_LIBRARY NAMES lipc)
 
+# --- Target ABI guard ---
+# Cross builds link against a modern libstdc++ but run against the Kindle's,
+# which stops at GLIBCXX_3.4.28. Anything newer only fails once the binary is on
+# the device, so check it here instead. Host builds are exempt.
+option(KINAMP_CHECK_ABI "Fail the build if a binary needs a newer libstdc++ than the device has" ON)
+set(KINAMP_MAX_GLIBCXX "3.4.28" CACHE STRING "Highest GLIBCXX version the target device provides")
+
+function(kinamp_check_abi target)
+    if(KINAMP_CHECK_ABI AND CMAKE_CROSSCOMPILING AND CMAKE_READELF)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_glibcxx.sh
+                    ${CMAKE_READELF} ${KINAMP_MAX_GLIBCXX} $<TARGET_FILE:${target}>
+            VERBATIM)
+    endif()
+endfunction()
+
 add_subdirectory(miniaudio)
 
 set(MPEG4_SOURCES
@@ -82,6 +98,7 @@ if(LIPC_LIBRARY)
     )
 
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
+    kinamp_check_abi(${PROJECT_NAME})
 else()
     message(STATUS "KinAMP: liblipc not found, skipping the GTK player (KinAMP-minimal still builds)")
 endif()
@@ -117,5 +134,8 @@ target_link_libraries(KinAMP-minimal PRIVATE
     rt
 )
 
+kinamp_check_abi(KinAMP-minimal)
+
 add_executable(radio_cli radio_cli.cpp)
 target_compile_options(radio_cli PRIVATE -Wall -Wextra)
+kinamp_check_abi(radio_cli)
