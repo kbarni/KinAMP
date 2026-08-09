@@ -375,9 +375,10 @@ std::vector<std::string> parse_playlist(const std::string& body, const std::stri
     return urls;
 }
 
-// Formats the player cannot decode yet.
+// Formats the player cannot decode yet. AAC/ADTS is handled by FAAD2, but HLS
+// (.m3u8) is a segmented transport rather than a plain stream.
 bool is_unsupported_stream(const std::string& url) {
-    return url_has_ext(url, ".aac") || url_has_ext(url, ".m3u8");
+    return url_has_ext(url, ".m3u8");
 }
 
 // Follows .pls/.m3u (and content-sniffed) playlists down to a real stream URL.
@@ -501,7 +502,7 @@ void add_station() {
                 // Re-check after resolving: a playlist can point at a format
                 // the player cannot decode yet.
                 if (is_unsupported_stream(selected.url)) {
-                    printf("AAC is currently not supported\n");
+                    printf("HLS (.m3u8) streams are not supported yet\n");
                     wait_for_enter();
                     continue;
                 }
@@ -541,7 +542,7 @@ void add_station_manual() {
     if (!resolve_playlist_url(selected)) return;
 
     if (is_unsupported_stream(selected.url)) {
-        printf("AAC is currently not supported\n");
+        printf("HLS (.m3u8) streams are not supported yet\n");
         wait_for_enter();
         return;
     }

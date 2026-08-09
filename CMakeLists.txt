@@ -25,6 +25,7 @@ set(MPEG4_SOURCES
 add_executable(${PROJECT_NAME}
     music_player.cpp
     music_backend.cpp
+    icy_client.cpp
     tags.cpp
     ${MPEG4_SOURCES}
 )
@@ -55,6 +56,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 add_executable(KinAMP-minimal
     cli_player.cpp
     music_backend.cpp
+    icy_client.cpp
     tags.cpp
     ${MPEG4_SOURCES}
 )

@@ -16,6 +16,10 @@ typedef void (*EosCallback)(void* user_data);
 // Callback type for Errors
 typedef void (*ErrorCallback)(const char* msg, void* user_data);
 
+// Callback type for ICY (Shoutcast/Icecast) now-playing titles.
+// Invoked on the decoder thread - marshal to the UI thread before touching GTK.
+typedef void (*MetadataCallback)(const char* title, void* user_data);
+
 struct Chapter {
     uint64_t timestamp; // 100ns units
     std::string title;
@@ -32,6 +36,9 @@ enum class InputType {
     FILE,
     STREAM
 };
+
+// Defined in music_backend.cpp: an opened HTTP stream, transport-agnostic.
+struct StreamSource;
 
 // --- Decoder Class ---
 class Decoder {
@@ -51,9 +58,17 @@ public:
     bool is_running() const;
 
     void set_error_callback(ErrorCallback callback, void* user_data);
-    
+    void set_metadata_callback(MetadataCallback callback, void* user_data);
+
     // Internal use for stream killing
     void set_stream_pid(pid_t pid);
+
+    // Internal use: lets stop() shut down a directly-connected socket so a
+    // blocking read returns at once instead of waiting for the recv timeout.
+    void set_stream_socket(int fd);
+
+    // Internal use: called from the stream reader when an ICY title arrives.
+    void emit_metadata(const std::string& raw_title);
 
     void set_volume(double vol);
 
@@ -68,8 +83,13 @@ private:
     ErrorCallback on_error_callback;
     void* error_user_data;
 
+    MetadataCallback on_metadata_callback;
+    void* metadata_user_data;
+    std::string last_stream_title; // decoder thread only; dedupes repeats
+
     std::mutex pid_mutex;
     pid_t current_stream_pid;
+    int current_stream_fd;
 
     static void* thread_func(void* arg);
     void decode_loop();
@@ -77,7 +97,9 @@ private:
     // Decoding Strategies
     void decode_mp4_file(const char* filepath, int start_time);
     void decode_miniaudio(const char* filepath, int start_time); // For files
-    void decode_stream(const char* url); // For HTTP streams
+    void decode_stream(const char* url); // For HTTP streams: opens, sniffs, dispatches
+    void decode_stream_miniaudio(StreamSource* src, const char* url, int out_fd);
+    void decode_stream_aac(StreamSource* src, int out_fd); // Raw AAC/ADTS via FAAD2
 
     // Helpers
     AudioFormat detect_format(const char* resource, InputType type);
@@ -111,6 +133,7 @@ public:
 
     void set_eos_callback(EosCallback callback, void* user_data);
     void set_error_callback(ErrorCallback callback, void* user_data);
+    void set_metadata_callback(MetadataCallback callback, void* user_data);
 
     void read_metadata(const char* filepath);
     
@@ -137,7 +160,10 @@ private:
 
     ErrorCallback on_error_callback;
     void* error_user_data;
-    
+
+    MetadataCallback on_metadata_callback;
+    void* metadata_user_data;
+
     gint64 last_position;
     double current_volume;
 
@@ -149,6 +175,9 @@ private:
 
     // Internal error callback to bridge Decoder -> MusicBackend -> UI
     static void internal_decoder_error_callback(const char* msg, void* user_data);
+
+    // Internal metadata callback to bridge Decoder -> MusicBackend -> UI
+    static void internal_decoder_metadata_callback(const char* title, void* user_data);
 };
 
 #endif // MUSIC_BACKEND_H

@@ -181,6 +181,36 @@ void on_error_cb(const char* msg, void* user_data) {
     g_idle_add(show_error_dialog, payload);
 }
 
+struct StreamTitlePayload {
+    char* title;
+    AppData* app_data;
+};
+
+gboolean apply_stream_title(gpointer data) {
+    StreamTitlePayload* payload = (StreamTitlePayload*)data;
+    AppData* app_data = payload->app_data;
+
+    // Playback may have moved on to a local file by the time this runs.
+    if (app_data->is_radio_mode) {
+        gtk_label_set_text(app_data->song_title_label, payload->title);
+        app_data->last_title = payload->title;
+    }
+
+    g_free(payload->title);
+    delete payload;
+    return FALSE; // Remove from idle sources
+}
+
+// Called on the decoder thread - hand off to the main loop before touching GTK.
+void on_stream_metadata_cb(const char* title, void* user_data) {
+    AppData *app_data = (AppData*)user_data;
+    StreamTitlePayload* payload = new StreamTitlePayload();
+    payload->title = g_strdup(title);
+    payload->app_data = app_data;
+
+    g_idle_add(apply_stream_title, payload);
+}
+
 void on_eos_cb(void* user_data) {
     AppData *app_data = (AppData*)user_data;
 
@@ -1704,6 +1734,7 @@ int main(int argc, char* argv[]) {
 
     backend.set_eos_callback(on_eos_cb, &app_data);
     backend.set_error_callback(on_error_cb, &app_data);
+    backend.set_metadata_callback(on_stream_metadata_cb, &app_data);
 
     openLipcInstance();
     disableSleep();
