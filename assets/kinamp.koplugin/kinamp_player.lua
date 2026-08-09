@@ -35,6 +35,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Backend = require("kinamp_backend")
+local logger = require("logger")
 local _ = require("gettext")
 local Screen = Device.screen
 
@@ -335,8 +336,22 @@ end
 --=============================================================================
 
 --- Re-reads the player status and repaints whatever changed.
+--
+-- Guarded, because every path into it runs somewhere that catches nothing: the
+-- 1 Hz poll is a UIManager task, and the rest are widget construction and button
+-- callbacks. An error in any of them propagates out of the event loop and takes
+-- KOReader down - losing someone's place in a book because a status file could
+-- not be read is not a trade worth making. A failed refresh leaves the widget
+-- showing whatever it had.
 -- @param force redraw the whole frame regardless
 function KinAMPPlayer:refresh(force)
+    local ok, err = pcall(self.doRefresh, self, force)
+    if not ok then
+        logger.warn("KinAMP: status refresh failed:", err)
+    end
+end
+
+function KinAMPPlayer:doRefresh(force)
     local status = Backend.get_status()
     local last = self.last
 
@@ -454,6 +469,7 @@ end
 function KinAMPPlayer:startPolling()
     if not self._poll_callback then
         self._poll_callback = function()
+            -- refresh() is guarded, so a failed tick cannot break the loop.
             self:refresh()
             UIManager:scheduleIn(self.poll_interval, self._poll_callback)
         end

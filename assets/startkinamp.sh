@@ -7,7 +7,11 @@ KINAMP=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP" || echo "KinAMP-armel"
 KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "KinAMP-minimal-armel")
 
 KINAMP_DIR=/mnt/us/KinAMP
-STATUS_FILE="$KINAMP_DIR/.kinamp_status"
+# Runtime files live on a filesystem that can hold a FIFO; /mnt/us (vfat)
+# cannot. Must match get_runtime_path() in cli_player.cpp.
+KINAMP_RUNTIME_DIR="${KINAMP_RUNTIME_DIR:-/tmp}"
+STATUS_FILE="$KINAMP_RUNTIME_DIR/kinamp_status"
+CMD_FIFO="$KINAMP_RUNTIME_DIR/kinamp_cmd"
 
 # Prefer the pid the player publishes in its status file.
 #
@@ -45,7 +49,7 @@ stop_background() {
 
     echo "Process didn't terminate gracefully. Force killing..."
     kill -9 "$pid" 2>/dev/null
-    rm -f "$STATUS_FILE" "$KINAMP_DIR/.kinamp_cmd"
+    rm -f "$STATUS_FILE" "$CMD_FIFO"
     return 0
 }
 

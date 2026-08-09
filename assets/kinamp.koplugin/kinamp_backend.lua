@@ -48,6 +48,39 @@ function Backend.log(msg)
     end
 end
 
+--- Reads a whole file, or nil if it could not be read.
+--
+-- Every file we read here is one the player rewrites underneath us: it replaces
+-- the status file via rename() about once a second, which is exactly how often
+-- the player widget reads it. On the Kindle these live on /mnt/us, which is
+-- vfat and has no unlink-while-open semantics, so the handle we are holding can
+-- stop being readable partway through.
+--
+-- That matters because Lua's line iterator turns a read error into a *raised*
+-- error ("if (ferror(f)) luaL_error(strerror(errno))"), and the status poll runs
+-- inside a UIManager task - an error there is not caught anywhere and takes the
+-- whole of KOReader down. So: one read instead of an iteration, wrapped, and a
+-- failure is just "no data this time".
+local function read_file(path)
+    local ok, content = pcall(function()
+        local f = io.open(path, "r")
+        if not f then return nil end
+        local data = f:read("*a")
+        f:close()
+        return data
+    end)
+    if not ok then
+        Backend.log("read failed for " .. tostring(path) .. ": " .. tostring(content))
+        return nil
+    end
+    return content
+end
+
+--- Iterates the non-empty lines of a string, tolerating CRLF.
+local function each_line(content)
+    return (content or ""):gmatch("[^\r\n]+")
+end
+
 --=============================================================================
 -- Control channel
 --=============================================================================
@@ -108,15 +141,20 @@ end
 -- snapshot or the new one, never a partial line.
 -- @return table of fields, or nil if no player is running
 function Backend.get_status()
-    local f = io.open(Config.status_file, "r")
-    if not f then return nil end
+    -- One retry: the window where the file is being replaced is a few
+    -- microseconds wide, so a second attempt costs nothing and keeps a transient
+    -- miss from flashing the widget back to "Not playing" for a tick.
+    local content = read_file(Config.status_file)
+    if not content or content == "" then
+        content = read_file(Config.status_file)
+    end
+    if not content or content == "" then return nil end
 
     local status = {}
-    for line in f:lines() do
+    for line in each_line(content) do
         local key, value = line:match("^([%w_]+)=(.*)$")
         if key then status[key] = value end
     end
-    f:close()
 
     for _, key in ipairs({ "pid", "index", "count", "pos", "dur", "vol", "strategy", "daemon" }) do
         status[key] = tonumber(status[key])
@@ -130,7 +168,7 @@ function Backend.get_status()
     -- can actually open.
     if status.cover and status.cover ~= "" then
         if not status.cover:match("^/") then
-            status.cover = Config.bin_folder .. status.cover
+            status.cover = Config.runtime_dir .. status.cover
         end
     else
         status.cover = nil
@@ -225,36 +263,32 @@ end
 -- Returns: { {name="Jazz", url="http://..."}, ... }
 function Backend.get_stations()
     local stations = {}
-    local f = io.open(Config.radio_file, "r")
-    if not f then
+    local content = read_file(Config.radio_file)
+    if not content then
         Backend.log("Radio file not found: " .. Config.radio_file)
         return stations
     end
-    for line in f:lines() do
+    for line in each_line(content) do
         -- Split by pipe '|'
         local name, url = line:match("^(.*)|(.*)$")
         if name and url then
             table.insert(stations, { name = name, url = url })
         end
     end
-    f:close()
     return stations
 end
 
 -- Load Internal Playlist
 function Backend.load_internal_playlist()
     local items = {}
-    local f = io.open(Config.playlist_file, "r")
-    if not f then
+    local content = read_file(Config.playlist_file)
+    if not content then
         Backend.log("Playlist file not found: " .. Config.playlist_file)
         return items
     end
-    for line in f:lines() do
-        if line and line ~= "" then
-            table.insert(items, line)
-        end
+    for line in each_line(content) do
+        table.insert(items, line)
     end
-    f:close()
     return items
 end
 
@@ -329,17 +363,16 @@ end
 -- which lives elsewhere and would no longer be a valid base for them.
 function Backend.read_m3u(path)
     local entries = {}
-    local f = io.open(path, "r")
-    if not f then
+    local content = read_file(path)
+    if not content then
         Backend.log("Cannot open playlist: " .. tostring(path))
         return entries
     end
 
     local base = path:match("^(.*/)") or ""
 
-    for line in f:lines() do
-        line = line:gsub("[\r\n]+$", "")
-        if line ~= "" and line:sub(1, 1) ~= "#" then
+    for line in each_line(content) do
+        if line:sub(1, 1) ~= "#" then
             local is_absolute = line:sub(1, 1) == "/"
             local is_url = line:find("://", 1, true) ~= nil
             if not is_absolute and not is_url and base ~= "" then
@@ -348,7 +381,6 @@ function Backend.read_m3u(path)
             table.insert(entries, line)
         end
     end
-    f:close()
 
     Backend.log(string.format("read_m3u: %d entries from %s", #entries, tostring(path)))
     return entries

@@ -25,12 +25,18 @@ enum PlaybackStrategy {
 };
 
 // Control channel: a FIFO we read newline-terminated commands from, and a status
-// file we rewrite whenever something changes. Both live next to the other config
-// files (i.e. in the working directory, which the launchers set to the install
-// dir). Clients that cannot open the FIFO know no player is running.
-#define CMD_FIFO_NAME    ".kinamp_cmd"
-#define STATUS_FILE_NAME ".kinamp_status"
-#define COVER_FILE_STEM  ".kinamp_cover"
+// file we rewrite whenever something changes. Clients that cannot open the FIFO
+// know no player is running.
+//
+// These do NOT live next to the config files. The install directory is on
+// /mnt/us, which is vfat: it cannot represent a FIFO at all, so mkfifo() there
+// fails with EPERM and the player ends up running with no way to be controlled.
+// Rewriting a status file once a second on that flash would be unkind too.
+// /tmp is a real filesystem on the device - music_backend.cpp already puts its
+// audio pipe there. KINAMP_RUNTIME_DIR overrides it.
+#define CMD_FIFO_NAME    "kinamp_cmd"
+#define STATUS_FILE_NAME "kinamp_status"
+#define COVER_FILE_STEM  "kinamp_cover"
 
 struct CliState {
     MusicBackend* backend;
@@ -58,8 +64,20 @@ struct CliState {
 // Global pointer for signal handling
 static CliState* g_state = nullptr;
 
+// Config and playlist files are relative to the working directory, which the
+// launchers set to the install directory: they have to persist across reboots.
 std::string get_config_path(const char* filename) {
     return std::string(filename);
+}
+
+// Runtime files (command FIFO, status, cover art) live on a filesystem that can
+// actually hold them - see the note on CMD_FIFO_NAME above.
+std::string get_runtime_path(const char* filename) {
+    const char* dir = getenv("KINAMP_RUNTIME_DIR");
+    if (!dir || !*dir) dir = "/tmp";
+    std::string path(dir);
+    if (!path.empty() && path[path.size() - 1] != '/') path += '/';
+    return path + filename;
 }
 
 static void write_status(CliState* state);
@@ -200,7 +218,7 @@ void write_cover_art(CliState* state) {
         return; // unknown container, don't hand the UI something it can't decode
     }
 
-    std::string path = get_config_path(COVER_FILE_STEM) + ext;
+    std::string path = get_runtime_path(COVER_FILE_STEM) + ext;
     std::string tmp_path = path + ".tmp";
     FILE* f = fopen(tmp_path.c_str(), "wb");
     if (!f) return;
@@ -244,7 +262,7 @@ static void sync_status_timer(CliState* state) {
 }
 
 static void write_status(CliState* state) {
-    std::string path = get_config_path(STATUS_FILE_NAME);
+    std::string path = get_runtime_path(STATUS_FILE_NAME);
     std::string tmp_path = path + ".tmp";
 
     std::ofstream out(tmp_path.c_str());
@@ -511,7 +529,9 @@ void handle_command(CliState* state, const std::string& raw) {
         if (!arg.empty() && load_playlist(arg, loaded) && !loaded.empty()) {
             cancel_reconnect(state);
             state->backend->stop();
-            state->playlist = loaded;
+            // swap, not assign: taking ownership of the buffer avoids copying
+            // every path, and keeps this out of the allocator's growth path.
+            state->playlist.swap(loaded);
             state->is_radio_mode = false;
             state->current_index = -1;
             state->stopped = true;
@@ -570,13 +590,23 @@ static gboolean on_cmd_readable(GIOChannel* source, GIOCondition condition, gpoi
 }
 
 static bool setup_command_fifo(CliState* state) {
-    std::string path = get_config_path(CMD_FIFO_NAME);
+    std::string path = get_runtime_path(CMD_FIFO_NAME);
 
     // A stale FIFO from a killed instance is harmless, but a stale *regular file*
     // of the same name would silently swallow every command, so always recreate.
     unlink(path.c_str());
     if (mkfifo(path.c_str(), 0666) == -1 && errno != EEXIST) {
+        // Worth spelling out: without the FIFO the player still plays, but it
+        // cannot be controlled, and every client sees "no player running" while
+        // clearly hearing one. EPERM here almost always means the directory is
+        // on a filesystem that cannot hold a FIFO, i.e. vfat.
         g_printerr("Could not create command FIFO '%s': %s\n", path.c_str(), strerror(errno));
+        g_printerr("  Remote control is disabled: the player will play but cannot be\n"
+                   "  paused, skipped or stopped, and clients will report no player\n"
+                   "  running. '%s' may be on a filesystem that cannot hold a FIFO\n"
+                   "  (vfat gives EPERM here). Set KINAMP_RUNTIME_DIR to a directory\n"
+                   "  on a real filesystem.\n",
+                   path.substr(0, path.find_last_of('/') + 1).c_str());
         return false;
     }
 
@@ -617,8 +647,8 @@ static void teardown_control_channel(CliState* state) {
     }
     cancel_reconnect(state);
 
-    unlink(get_config_path(CMD_FIFO_NAME).c_str());
-    unlink(get_config_path(STATUS_FILE_NAME).c_str());
+    unlink(get_runtime_path(CMD_FIFO_NAME).c_str());
+    unlink(get_runtime_path(STATUS_FILE_NAME).c_str());
     if (!state->cover_path.empty()) unlink(state->cover_path.c_str());
 }
 

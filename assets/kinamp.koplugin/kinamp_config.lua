@@ -20,6 +20,20 @@ end
 
 local bin_folder = find_bin_folder()
 
+-- Where the player keeps its command FIFO and status file. Deliberately not the
+-- install directory: on the device that is /mnt/us, which is vfat and cannot
+-- hold a FIFO at all, so the control channel would silently never exist. Must
+-- match get_runtime_path() in cli_player.cpp.
+local function find_runtime_dir()
+    local env_dir = os.getenv("KINAMP_RUNTIME_DIR")
+    if env_dir and env_dir ~= "" then
+        return (env_dir:gsub("/?$", "/"))
+    end
+    return "/tmp/"
+end
+
+local runtime_dir = find_runtime_dir()
+
 -- KINAMP_MUSIC_FOLDER is shared with the GTK player, which uses it as the start
 -- folder for its add file/folder dialogs.
 local function find_music_dir()
@@ -44,8 +58,9 @@ return {
 
     -- Control channel, created and removed by KinAMP-minimal itself. The FIFO
     -- doubles as the liveness check: only a running player holds its read end.
-    cmd_fifo = bin_folder .. ".kinamp_cmd",
-    status_file = bin_folder .. ".kinamp_status",
+    runtime_dir = runtime_dir,
+    cmd_fifo = runtime_dir .. "kinamp_cmd",
+    status_file = runtime_dir .. "kinamp_status",
 
     music_dir = find_music_dir(), -- Default start dir for browser
 
