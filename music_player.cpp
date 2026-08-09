@@ -17,6 +17,7 @@
 #include "openlipc/openlipc.h"
 
 #include "music_backend.h"
+#include "tags.h"
 #include "icons.h"
 
 // KINAMP_VERSION comes from the project() version in CMakeLists.txt. Guessing a
@@ -40,11 +41,29 @@ enum SleepMode {
     SLEEP_END_OF_PLAYLIST
 };
 
+// Playlist model columns. The path stays in column 0: the playlist is saved,
+// reloaded and played straight out of the model, and all of that keeps working
+// unchanged now that a separate column holds what the user sees.
+enum {
+    PLAYLIST_COL_PATH = 0,
+    PLAYLIST_COL_DISPLAY,
+    PLAYLIST_COL_SCANNED,
+    PLAYLIST_N_COLUMNS
+};
+
+// The radio store predates this and keeps its own layout: name, then URL.
+#define RADIO_COL_NAME 0
+
 struct AppData {
     MusicBackend *backend;
     GtkListStore *playlist_store;
-    GtkListStore *radio_store; 
+    GtkListStore *radio_store;
     GtkTreeView *playlist_treeview;
+    GtkTreeViewColumn *list_column;
+    GtkCellRenderer *list_renderer;
+
+    guint tag_scan_idle_id;  // 0 when no tag scan is queued
+    int tag_scan_index;      // next playlist row the scan should look at
     GtkLabel *song_title_label;
     GtkLabel *time_label;
 
@@ -249,21 +268,108 @@ void on_eos_cb(void* user_data) {
 }
 
 
-// What to show in the now playing label: the tags when the file carries them,
-// otherwise the file name as before. The backend fills the meta_* fields in
-// play_file(), so this is only meaningful for the track currently loaded.
-static std::string now_playing_label(MusicBackend *backend, const char *full_path) {
-    const std::string &title = backend->meta_title;
-    const std::string &artist = backend->meta_artist;
+// How a track reads once its tags are known. Empty when there is no title to
+// build on, which is the caller's cue to fall back to the file name.
+static std::string format_track_label(const std::string &artist, const std::string &title) {
+    if (title.empty()) return "";
+    return artist.empty() ? title : artist + " - " + title;
+}
 
-    if (!title.empty()) {
-        return artist.empty() ? title : artist + " - " + title;
-    }
-
+static std::string file_name_of(const char *full_path) {
     char *path_copy = g_strdup(full_path);
     std::string name = basename(path_copy);
     g_free(path_copy);
     return name;
+}
+
+// What to show in the now playing label: the tags when the file carries them,
+// otherwise the file name as before. The backend fills the meta_* fields in
+// play_file(), so this is only meaningful for the track currently loaded.
+static std::string now_playing_label(MusicBackend *backend, const char *full_path) {
+    std::string label = format_track_label(backend->meta_artist, backend->meta_title);
+    return label.empty() ? file_name_of(full_path) : label;
+}
+
+// Reading tags means opening every file, which is slow on Kindle storage and
+// would stall the UI for seconds when a folder is added. So rows go in with
+// their file name, and the tags replace it from an idle handler a few rows at a
+// time. This runs on the main loop, so it needs no locking against the store.
+static const int TAG_SCAN_BATCH = 8;
+
+static gboolean scan_playlist_tags_cb(gpointer data) {
+    AppData *app_data = (AppData*)data;
+    GtkTreeModel *model = GTK_TREE_MODEL(app_data->playlist_store);
+    GtkTreeIter iter;
+    int scanned = 0;
+
+    // Rows already scanned cost nothing to skip, so they do not use up the
+    // batch: a scan re-queued after an append still reaches the new rows fast.
+    while (scanned < TAG_SCAN_BATCH) {
+        if (!gtk_tree_model_iter_nth_child(model, &iter, NULL, app_data->tag_scan_index)) {
+            app_data->tag_scan_idle_id = 0;
+            return FALSE;
+        }
+        app_data->tag_scan_index++;
+
+        gchar *path = NULL;
+        gboolean done = FALSE;
+        gtk_tree_model_get(model, &iter, PLAYLIST_COL_PATH, &path,
+                           PLAYLIST_COL_SCANNED, &done, -1);
+
+        if (path != NULL && !done) {
+            AudioTags tags;
+            std::string label;
+            if (read_audio_tags(path, &tags)) {
+                label = format_track_label(tags.artist, tags.title);
+            }
+
+            // Untagged files keep the file name they went in with.
+            if (label.empty()) {
+                gtk_list_store_set(app_data->playlist_store, &iter,
+                                   PLAYLIST_COL_SCANNED, TRUE, -1);
+            } else {
+                gtk_list_store_set(app_data->playlist_store, &iter,
+                                   PLAYLIST_COL_DISPLAY, label.c_str(),
+                                   PLAYLIST_COL_SCANNED, TRUE, -1);
+            }
+            scanned++;
+        }
+        g_free(path);
+    }
+    return TRUE;
+}
+
+// Pass restart when rows may have gone away (a cleared or reloaded playlist);
+// a plain append only needs the handler woken up again.
+static void queue_tag_scan(AppData *app_data, bool restart) {
+    if (restart) app_data->tag_scan_index = 0;
+    if (app_data->tag_scan_idle_id == 0) {
+        app_data->tag_scan_idle_id = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
+                                                     scan_playlist_tags_cb,
+                                                     app_data, NULL);
+    }
+}
+
+// Adds a row showing the file name, to be replaced by the tags once the scan
+// reaches it. Every playlist insertion goes through here.
+static void playlist_append(GtkListStore *store, const char *file_path) {
+    std::string name = file_name_of(file_path);
+
+    GtkTreeIter iter;
+    gtk_list_store_append(store, &iter);
+    gtk_list_store_set(store, &iter,
+                       PLAYLIST_COL_PATH, file_path,
+                       PLAYLIST_COL_DISPLAY, name.c_str(),
+                       PLAYLIST_COL_SCANNED, FALSE, -1);
+}
+
+// The two stores keep their display text in different columns, so the shared
+// view column is rebound whenever the model is swapped.
+static void bind_list_column(AppData *app_data, int text_column, const char *title) {
+    gtk_tree_view_column_clear_attributes(app_data->list_column, app_data->list_renderer);
+    gtk_tree_view_column_add_attribute(app_data->list_column, app_data->list_renderer,
+                                       "text", text_column);
+    gtk_tree_view_column_set_title(app_data->list_column, title);
 }
 
 gboolean update_progress_cb(gpointer data) {
@@ -474,12 +580,11 @@ void load_state(AppData *app_data) {
         std::string line;
         while (std::getline(infile, line)) {
             if (!line.empty()) {
-                GtkTreeIter iter;
-                gtk_list_store_append(app_data->playlist_store, &iter);
-                gtk_list_store_set(app_data->playlist_store, &iter, 0, line.c_str(), -1);
+                playlist_append(app_data->playlist_store, line.c_str());
             }
         }
         infile.close();
+        queue_tag_scan(app_data, true);
     }
 
     std::string config_path = get_config_path(".kinamp.conf");
@@ -521,6 +626,7 @@ void load_state(AppData *app_data) {
         gtk_widget_hide(app_data->music_action_hbox);
         gtk_widget_show(app_data->radio_action_hbox);
         gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->radio_store));
+        bind_list_column(app_data, RADIO_COL_NAME, "Station");
     }
     if (current_index != -1) {
         GtkTreePath *path = gtk_tree_path_new_from_indices(current_index, -1);
@@ -644,9 +750,7 @@ void add_directory_to_playlist(const char *dir_path, GtkListStore *playlist_stor
     std::sort(files.begin(), files.end());
 
     for (const auto& file_path : files) {
-        GtkTreeIter iter;
-        gtk_list_store_append(playlist_store, &iter);
-        gtk_list_store_set(playlist_store, &iter, 0, file_path.c_str(), -1);
+        playlist_append(playlist_store, file_path.c_str());
     }
 }
 
@@ -943,12 +1047,11 @@ void on_add_file_clicked(GtkWidget *widget, gpointer data) {
         GSList *filenames = gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(dialog));
         for (GSList *l = filenames; l != NULL; l = l->next) {
             char *file_path = (char*)l->data;
-            GtkTreeIter iter;
-            gtk_list_store_append(playlist_store, &iter);
-            gtk_list_store_set(playlist_store, &iter, 0, file_path, -1);
+            playlist_append(playlist_store, file_path);
             g_free(file_path);
         }
         g_slist_free(filenames);
+        queue_tag_scan(app_data, false);
     }
 
     gtk_widget_destroy(dialog);
@@ -967,6 +1070,7 @@ void on_add_folder_clicked(GtkWidget *widget, gpointer data) {
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
         char *folder_path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
         add_directory_to_playlist(folder_path, playlist_store);
+        queue_tag_scan(app_data, false);
         g_free(folder_path);
     }
 
@@ -977,6 +1081,7 @@ void on_clear_playlist_clicked(GtkWidget *widget, gpointer data) {
     AppData *app_data = (AppData*)data;
     GtkListStore *playlist_store = app_data->playlist_store;
     gtk_list_store_clear(playlist_store);
+    app_data->tag_scan_index = 0;  // the rows the scan was walking are gone
 }
 void on_save_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
@@ -1041,12 +1146,11 @@ void on_load_clicked(GtkWidget *widget, gpointer data) {
             std::string line;
             while (std::getline(infile, line)) {
                 if (!line.empty()) {
-                    GtkTreeIter iter;
-                    gtk_list_store_append(playlist_store, &iter);
-                    gtk_list_store_set(playlist_store, &iter, 0, line.c_str(), -1);
+                    playlist_append(playlist_store, line.c_str());
                 }
             }
             infile.close();
+            queue_tag_scan(app_data, true);
         }
         g_free(filename);
     }
@@ -1117,8 +1221,9 @@ void on_switch_mode_clicked(GtkWidget *widget, gpointer data) {
         gtk_widget_show(app_data->music_action_hbox);
         gtk_widget_hide(app_data->radio_action_hbox);
         gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->playlist_store));
-        
-        save_radio_stations(app_data); 
+        bind_list_column(app_data, PLAYLIST_COL_DISPLAY, "Track");
+
+        save_radio_stations(app_data);
         // We could restore selection here if we saved it in AppData
     } else {
         // Switch to Radio
@@ -1128,6 +1233,7 @@ void on_switch_mode_clicked(GtkWidget *widget, gpointer data) {
         gtk_widget_hide(app_data->music_action_hbox);
         gtk_widget_show(app_data->radio_action_hbox);
         gtk_tree_view_set_model(app_data->playlist_treeview, GTK_TREE_MODEL(app_data->radio_store));
+        bind_list_column(app_data, RADIO_COL_NAME, "Station");
     }
 }
 
@@ -1582,6 +1688,8 @@ int main(int argc, char* argv[]) {
     app_data.sleep_minutes = 30;
     app_data.sleep_deadline = 0;
     app_data.sleep_quit_pending = false;
+    app_data.tag_scan_idle_id = 0;
+    app_data.tag_scan_index = 0;
 
     backend.set_eos_callback(on_eos_cb, &app_data);
     backend.set_error_callback(on_error_cb, &app_data);
@@ -1716,7 +1824,10 @@ int main(int argc, char* argv[]) {
     gtk_container_add(GTK_CONTAINER(playlist_frame), scrolled_window);
 
     // Initialize stores
-    app_data.playlist_store = gtk_list_store_new(1, G_TYPE_STRING);
+    app_data.playlist_store = gtk_list_store_new(PLAYLIST_N_COLUMNS,
+                                                 G_TYPE_STRING,   // file path
+                                                 G_TYPE_STRING,   // what is shown
+                                                 G_TYPE_BOOLEAN); // tags read yet
     app_data.radio_store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
 
     GtkWidget *playlist_treeview = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app_data.playlist_store));
@@ -1724,8 +1835,12 @@ int main(int argc, char* argv[]) {
     gtk_container_add(GTK_CONTAINER(scrolled_window), playlist_treeview);
 
     GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
-    GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes("Filename", renderer, "text", 0, NULL);
+    GtkTreeViewColumn *column = gtk_tree_view_column_new();
+    gtk_tree_view_column_pack_start(column, renderer, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_treeview), column);
+    app_data.list_column = column;
+    app_data.list_renderer = renderer;
+    bind_list_column(&app_data, PLAYLIST_COL_DISPLAY, "Track");
 
     // Container for all bottom actions
     GtkWidget *bottom_action_hbox = gtk_hbox_new(FALSE, 5);
