@@ -904,6 +904,29 @@ static int ilstin(int size)
                     fprintf(stderr, "/");
             }
             break;
+        case 13: // JPEG
+        case 14: // PNG
+            // Cover art. The type-0 branch above also picks up 'covr', but only
+            // files that tag the artwork as implicit reach it; anything written
+            // by a normal tagger declares the real image type here.
+            if (!memcmp(tagid, "covr", 4))
+            {
+                freeMem(&mp4config.cover_art.data);
+                mp4config.cover_art.data = (uint8_t*)malloc(asize);
+                if (mp4config.cover_art.data)
+                {
+                    mp4config.cover_art.size = asize;
+                    datain(mp4config.cover_art.data, asize);
+                    asize = 0;
+                    fprintf(stderr, "(%s image, %d bytes)",
+                            type == 13 ? "JPEG" : "PNG", mp4config.cover_art.size);
+                }
+            }
+            else
+            {
+                fprintf(stderr, "(image data)");
+            }
+            break;
         default:
             fprintf(stderr, "(unknown data type)");
             break;

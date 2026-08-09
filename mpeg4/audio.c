@@ -35,7 +35,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <math.h>
-#include <faad/neaacdec.h>
+#include "faad_compat.h"
 #include <stdint.h>
 
 #include "unicode_support.h"

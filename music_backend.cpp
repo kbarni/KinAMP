@@ -22,8 +22,43 @@
 #include <algorithm>
 
 extern "C" {
-#include <faad/neaacdec.h>
+#include "faad_compat.h"
 #include "mpeg4/mp4read.h"
+}
+
+// --- GStreamer 0.10 / 1.0 compatibility ---
+// KINAMP_GST_API is set by CMake from whichever GStreamer it found: 0 for the
+// Kindle's 0.10, 1 for a desktop 1.0. Only three things actually differ for us:
+// the raw-audio caps name, the sink element, and the duration query signature.
+#ifndef KINAMP_GST_API
+#  define KINAMP_GST_API 0
+#endif
+#ifndef KINAMP_AUDIO_SINK
+#  if KINAMP_GST_API >= 1
+#    define KINAMP_AUDIO_SINK "audioconvert ! audioresample ! autoaudiosink"
+#  else
+#    define KINAMP_AUDIO_SINK "mixersink"
+#  endif
+#endif
+
+#if KINAMP_GST_API >= 1
+#  define KINAMP_RAW_CAPS "audio/x-raw, format=S16LE, layout=interleaved, rate=%d, channels=2"
+static inline gboolean kinamp_query_duration(GstElement *pipeline, gint64 *duration) {
+    return gst_element_query_duration(pipeline, GST_FORMAT_TIME, duration);
+}
+#else
+#  define KINAMP_RAW_CAPS "audio/x-raw-int, endianness=1234, signed=true, width=16, depth=16, rate=%d, channels=2"
+static inline gboolean kinamp_query_duration(GstElement *pipeline, gint64 *duration) {
+    GstFormat format = GST_FORMAT_TIME;
+    return gst_element_query_duration(pipeline, &format, duration);
+}
+#endif
+
+// Lets a desktop build override the sink without recompiling, e.g.
+// KINAMP_SINK="alsasink device=hw:1" ./KinAMP-minimal --music
+static const char* kinamp_audio_sink() {
+    const char* env = g_getenv("KINAMP_SINK");
+    return (env && *env) ? env : KINAMP_AUDIO_SINK;
 }
 
 // Vorbis/OGG support. miniaudio has no built-in Vorbis decoder; it enables one
@@ -1102,9 +1137,8 @@ gint64 MusicBackend::get_duration() {
     if (total_duration > 0) return total_duration;
 
     if (pipeline) {
-        GstFormat format = GST_FORMAT_TIME;
         gint64 duration;
-        if (gst_element_query_duration(pipeline, &format, &duration)) {
+        if (kinamp_query_duration(pipeline, &duration)) {
             return duration;
         }
     }
@@ -1247,18 +1281,24 @@ void MusicBackend::play_file(const char* filepath, int start_time) {
 
     int rate = (current_samplerate > 0) ? current_samplerate : 44100;
 
+    GError *pipeline_error = NULL;
     gchar *pipeline_desc = g_strdup_printf(
-        "filesrc location=\"%s\" ! audio/x-raw-int, endianness=1234, signed=true, width=16, depth=16, rate=%d, channels=2 ! queue ! mixersink",
-        PIPE_PATH, rate
+        "filesrc location=\"%s\" ! " KINAMP_RAW_CAPS " ! queue ! %s",
+        PIPE_PATH, rate, kinamp_audio_sink()
     );
-    pipeline = gst_parse_launch(pipeline_desc, NULL);
-    g_free(pipeline_desc);
+    pipeline = gst_parse_launch(pipeline_desc, &pipeline_error);
 
     if (!pipeline) {
-        g_printerr("Backend: Failed to create pipeline\n");
+        g_printerr("Backend: Failed to create pipeline (%s): %s\n",
+                   pipeline_desc,
+                   pipeline_error ? pipeline_error->message : "unknown error");
+        if (pipeline_error) g_error_free(pipeline_error);
+        g_free(pipeline_desc);
         is_playing = false;
         return;
     }
+    if (pipeline_error) g_error_free(pipeline_error);
+    g_free(pipeline_desc);
 
     bus = gst_element_get_bus(pipeline);
     bus_watch_id = gst_bus_add_watch(bus, bus_callback_func, this);

@@ -1,0 +1,615 @@
+--[[--
+Floating media player for KinAMP.
+
+A movable dialog with cover art, now-playing text, a progress bar and transport
+controls. It renders whatever the player daemon publishes in its status file and
+drives it over the command FIFO; it never launches or kills anything itself
+except through Backend.
+
+E-ink shapes the design: the widget polls once a second while visible, but only
+repaints the region that actually changed. Position ticks touch the progress
+row alone, and the frame as a whole is only redrawn when the track or the
+playback state changes.
+--]]
+
+local Blitbuffer = require("ffi/blitbuffer")
+local CenterContainer = require("ui/widget/container/centercontainer")
+local Device = require("device")
+local FocusManager = require("ui/widget/focusmanager")
+local Font = require("ui/font")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
+local IconButton = require("ui/widget/iconbutton")
+local IconWidget = require("ui/widget/iconwidget")
+local ImageWidget = require("ui/widget/imagewidget")
+local Menu = require("ui/widget/menu")
+local MovableContainer = require("ui/widget/container/movablecontainer")
+local ProgressWidget = require("ui/widget/progresswidget")
+local Size = require("ui/size")
+local TextWidget = require("ui/widget/textwidget")
+local TitleBar = require("ui/widget/titlebar")
+local UIManager = require("ui/uimanager")
+local VerticalGroup = require("ui/widget/verticalgroup")
+local VerticalSpan = require("ui/widget/verticalspan")
+local Backend = require("kinamp_backend")
+local _ = require("gettext")
+local Screen = Device.screen
+
+local ICON_DIR = debug.getinfo(1, "S").source:match("@?(.*/)") .. "icons/"
+
+--- Button showing one of our own icons.
+-- IconButton resolves names against KOReader's icon set, which has no media
+-- controls; everything else it does (tap flash, hold, geometry) is reused as is.
+local PlayerButton = IconButton:extend{
+    icon_file = nil,
+}
+
+function PlayerButton:init()
+    self.image = IconWidget:new{
+        file = ICON_DIR .. self.icon_file,
+        width = self.width,
+        height = self.height,
+        alpha = true,
+    }
+
+    self.show_parent = self.show_parent or self
+
+    self.horizontal_group = HorizontalGroup:new{}
+    table.insert(self.horizontal_group, HorizontalSpan:new{})
+    table.insert(self.horizontal_group, self.image)
+    table.insert(self.horizontal_group, HorizontalSpan:new{})
+
+    self.button = VerticalGroup:new{}
+    table.insert(self.button, VerticalSpan:new{})
+    table.insert(self.button, self.horizontal_group)
+    table.insert(self.button, VerticalSpan:new{})
+
+    self[1] = self.button
+    self:update()
+end
+
+--- Swaps the glyph, e.g. play <-> pause.
+function PlayerButton:setIconFile(icon_file)
+    if self.icon_file == icon_file then return false end
+    self.icon_file = icon_file
+    self.image:free()
+    self.image.file = ICON_DIR .. icon_file
+    self.image._bb = nil
+    return true
+end
+
+local KinAMPPlayer = FocusManager:extend{
+    -- How often to re-read the player's status while we are on screen.
+    poll_interval = 1,
+    -- Last status we rendered, to decide what needs repainting.
+    last = nil,
+}
+
+local function format_time(seconds)
+    if not seconds or seconds < 0 then seconds = 0 end
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+function KinAMPPlayer:init()
+    local screen_w, screen_h = Screen:getWidth(), Screen:getHeight()
+
+    local border_size = Size.border.window
+    local padding = Size.padding.large
+    self.frame_width = math.min(
+        math.floor(math.min(screen_w, screen_h) * 0.84),
+        screen_w - 2 * Size.margin.default)
+    local inner_width = self.frame_width - 2 * (border_size + padding)
+
+    -- Icon sizes: the play button is deliberately larger, it is the one control
+    -- you aim for without looking.
+    local main_button = Screen:scaleBySize(60)
+    local side_button = Screen:scaleBySize(38)
+    local cover_size = math.floor(inner_width * 0.60)
+
+    if Device:hasKeys() then
+        self.key_events.Close = { { Device.input.group.Back } }
+    end
+    if Device:isTouchDevice() then
+        self.ges_events.Tap = {
+            GestureRange:new{
+                ges = "tap",
+                range = Geom:new{ x = 0, y = 0, w = screen_w, h = screen_h },
+            },
+        }
+    end
+
+    -- --- Title bar -------------------------------------------------------
+    self.title_bar = TitleBar:new{
+        width = inner_width,
+        align = "center",
+        title = _("KinAMP"),
+        with_bottom_line = true,
+        close_callback = function() self:onClose() end,
+        show_parent = self,
+    }
+
+    -- --- Cover art -------------------------------------------------------
+    -- Kept in its own container so a new track can swap the image without
+    -- disturbing anything around it.
+    self.cover_container = CenterContainer:new{
+        dimen = Geom:new{ w = inner_width, h = cover_size },
+        self:buildCover(nil, cover_size),
+    }
+    self.cover_size = cover_size
+    self.cover_frame = FrameContainer:new{
+        bordersize = 0,
+        padding = 0,
+        margin = 0,
+        self.cover_container,
+    }
+
+    -- --- Now playing -----------------------------------------------------
+    self.artist_text = TextWidget:new{
+        text = "",
+        face = Font:getFace("cfont", 17),
+        max_width = inner_width,
+    }
+    self.title_text = TextWidget:new{
+        text = _("Not playing"),
+        face = Font:getFace("tfont", 21),
+        bold = true,
+        max_width = inner_width,
+    }
+    self.info_frame = FrameContainer:new{
+        bordersize = 0,
+        padding = 0,
+        margin = 0,
+        VerticalGroup:new{
+            align = "center",
+            CenterContainer:new{
+                dimen = Geom:new{ w = inner_width, h = self.artist_text:getSize().h },
+                self.artist_text,
+            },
+            VerticalSpan:new{ width = Size.padding.small },
+            CenterContainer:new{
+                dimen = Geom:new{ w = inner_width, h = self.title_text:getSize().h },
+                self.title_text,
+            },
+        },
+    }
+
+    -- --- Progress --------------------------------------------------------
+    self.progress_bar = ProgressWidget:new{
+        width = inner_width,
+        height = Screen:scaleBySize(10),
+        percentage = 0,
+        margin_h = 0,
+        margin_v = 0,
+    }
+    -- Radio has no length to show, so the bar is swapped for a blank of the
+    -- same height rather than left sitting at zero.
+    self.progress_blank = VerticalSpan:new{ width = self.progress_bar.height }
+    self.elapsed_text = TextWidget:new{
+        text = "0:00",
+        face = Font:getFace("xx_smallinfofont"),
+    }
+    self.total_text = TextWidget:new{
+        text = "0:00",
+        face = Font:getFace("xx_smallinfofont"),
+    }
+    self.progress_group = VerticalGroup:new{
+        align = "left",
+        self.progress_bar,
+        VerticalSpan:new{ width = Size.padding.small },
+        HorizontalGroup:new{
+            self.elapsed_text,
+            HorizontalSpan:new{ width = inner_width - self.elapsed_text:getSize().w
+                                        - self.total_text:getSize().w },
+            self.total_text,
+        },
+    }
+    self.progress_frame = FrameContainer:new{
+        bordersize = 0,
+        padding = 0,
+        margin = 0,
+        self.progress_group,
+    }
+
+    -- --- Controls --------------------------------------------------------
+    self.playlist_button = PlayerButton:new{
+        icon_file = "playlist.svg",
+        width = side_button, height = side_button,
+        show_parent = self,
+        callback = function() self:showPlaylist() end,
+    }
+    self.prev_button = PlayerButton:new{
+        icon_file = "prev.svg",
+        width = side_button, height = side_button,
+        show_parent = self,
+        callback = function() self:onPrevious() end,
+    }
+    self.play_button = PlayerButton:new{
+        icon_file = "play.svg",
+        width = main_button, height = main_button,
+        show_parent = self,
+        callback = function() self:onPlayPause() end,
+    }
+    self.next_button = PlayerButton:new{
+        icon_file = "next.svg",
+        width = side_button, height = side_button,
+        show_parent = self,
+        callback = function() self:onNext() end,
+    }
+    self.radio_button = PlayerButton:new{
+        icon_file = "radio.svg",
+        width = side_button, height = side_button,
+        show_parent = self,
+        callback = function() self:showStations() end,
+    }
+
+    local buttons = {
+        self.playlist_button, self.prev_button, self.play_button,
+        self.next_button, self.radio_button,
+    }
+    local buttons_width = 0
+    for _, b in ipairs(buttons) do
+        buttons_width = buttons_width + b:getSize().w
+    end
+    local gap = math.max(0, math.floor((inner_width - buttons_width) / (#buttons - 1)))
+
+    local controls = HorizontalGroup:new{ align = "center" }
+    for i, b in ipairs(buttons) do
+        if i > 1 then
+            table.insert(controls, HorizontalSpan:new{ width = gap })
+        end
+        table.insert(controls, b)
+    end
+    self.controls_frame = FrameContainer:new{
+        bordersize = 0,
+        padding = 0,
+        margin = 0,
+        controls,
+    }
+
+    -- --- Assembly --------------------------------------------------------
+    self.frame = FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE,
+        bordersize = border_size,
+        radius = Size.radius.window,
+        padding = padding,
+        margin = 0,
+        VerticalGroup:new{
+            align = "center",
+            self.title_bar,
+            VerticalSpan:new{ width = Size.padding.large },
+            self.cover_frame,
+            VerticalSpan:new{ width = Size.padding.large },
+            self.info_frame,
+            VerticalSpan:new{ width = Size.padding.large },
+            self.progress_frame,
+            VerticalSpan:new{ width = Size.padding.large },
+            self.controls_frame,
+        },
+    }
+
+    self.movable = MovableContainer:new{ self.frame }
+    self[1] = CenterContainer:new{
+        dimen = Geom:new{ w = screen_w, h = screen_h },
+        self.movable,
+    }
+
+    self.layout = { { self.playlist_button, self.prev_button, self.play_button,
+                      self.next_button, self.radio_button } }
+
+    self:refresh(true)
+end
+
+--- Builds the cover image: embedded artwork if the player extracted any,
+-- otherwise the KinAMP mark.
+function KinAMPPlayer:buildCover(path, size)
+    if path then
+        local lfs = require("libs/libkoreader-lfs")
+        if lfs.attributes(path, "mode") == "file" then
+            return ImageWidget:new{
+                file = path,
+                width = size,
+                height = size,
+                scale_factor = 0, -- fit, keeping aspect ratio
+                -- Every track writes to the same filename, so caching by path
+                -- would keep showing the previous track's artwork.
+                file_do_cache = false,
+            }
+        end
+    end
+    return ImageWidget:new{
+        file = ICON_DIR .. "kinamp-icon.png",
+        width = size,
+        height = size,
+        scale_factor = 0, -- fit, keeping aspect ratio
+        -- The mark is transparent outside the diamond; without this its
+        -- background blits as a grey box instead of the dialog's white.
+        alpha = true,
+    }
+end
+
+--=============================================================================
+-- State rendering
+--=============================================================================
+
+--- Re-reads the player status and repaints whatever changed.
+-- @param force redraw the whole frame regardless
+function KinAMPPlayer:refresh(force)
+    local status = Backend.get_status()
+    local last = self.last
+
+    local repaint_all = force or false
+    local repaint_info = false
+    local repaint_progress = false
+    local repaint_play = false
+
+    -- Track identity: path covers both files and stream URLs.
+    local track_changed = not last or last.path ~= (status and status.path)
+        or (last.state == nil) ~= (status == nil)
+
+    if not status then
+        if track_changed then
+            self.artist_text:setText("")
+            self.title_text:setText(_("Not playing"))
+            self:setCover(nil)
+            self.progress_group[1] = self.progress_blank
+            self.elapsed_text:setText("0:00")
+            self.total_text:setText("0:00")
+            repaint_all = true
+        end
+        if self.play_button:setIconFile("play.svg") then repaint_all = true end
+        self.last = nil
+    else
+        if track_changed or (last and last.title ~= status.title)
+                or (last and last.artist ~= status.artist) then
+            -- Radio streams carry the whole "Artist - Title" in one ICY field
+            -- and have no artist of their own; fall back to the station name.
+            local title = status.title
+            if not title or title == "" then
+                title = status.path and (status.path:match("([^/]+)$") or status.path) or _("Unknown")
+            end
+            self.title_text:setText(title)
+            self.artist_text:setText(status.artist ~= "" and status.artist
+                                     or (status.is_radio and status.station or ""))
+            repaint_info = true
+        end
+
+        if track_changed then
+            self:setCover(status.cover)
+            repaint_all = true
+        end
+
+        -- Progress
+        local elapsed = format_time(status.pos)
+        local total, percentage
+        if status.is_radio or not status.dur or status.dur <= 0 then
+            total = status.is_radio and _("LIVE") or "0:00"
+            percentage = nil
+        else
+            total = format_time(status.dur)
+            percentage = math.min(1, status.pos / status.dur)
+        end
+
+        if percentage then
+            if self.progress_group[1] ~= self.progress_bar then
+                self.progress_group[1] = self.progress_bar
+                repaint_all = true
+            end
+            if self.progress_bar.percentage ~= percentage then
+                self.progress_bar.percentage = percentage
+                repaint_progress = true
+            end
+        elseif self.progress_group[1] ~= self.progress_blank then
+            self.progress_group[1] = self.progress_blank
+            repaint_all = true
+        end
+
+        if self.elapsed_text.text ~= elapsed then
+            self.elapsed_text:setText(elapsed)
+            repaint_progress = true
+        end
+        if self.total_text.text ~= total then
+            self.total_text:setText(total)
+            repaint_progress = true
+        end
+
+        repaint_play = self.play_button:setIconFile(
+            status.is_playing and "pause.svg" or "play.svg")
+
+        self.last = status
+    end
+
+    if repaint_all then
+        self:refreshRegion(self.frame)
+    else
+        if repaint_info then self:refreshRegion(self.info_frame) end
+        if repaint_play then self:refreshRegion(self.controls_frame) end
+        -- The position tick is the only thing that happens every second, so it
+        -- gets the cheapest refresh we have.
+        if repaint_progress then self:refreshRegion(self.progress_frame, "fast") end
+    end
+end
+
+function KinAMPPlayer:refreshRegion(widget, refresh_type)
+    if not widget or not widget.dimen then return end
+    UIManager:setDirty(self, function()
+        return refresh_type or "ui", widget.dimen
+    end)
+end
+
+function KinAMPPlayer:setCover(path)
+    if self.cover_path == path then return end
+    self.cover_path = path
+    local old = self.cover_container[1]
+    if old and old.free then old:free() end
+    self.cover_container[1] = self:buildCover(path, self.cover_size)
+end
+
+--=============================================================================
+-- Polling
+--=============================================================================
+
+function KinAMPPlayer:startPolling()
+    if not self._poll_callback then
+        self._poll_callback = function()
+            self:refresh()
+            UIManager:scheduleIn(self.poll_interval, self._poll_callback)
+        end
+    end
+    UIManager:scheduleIn(self.poll_interval, self._poll_callback)
+end
+
+function KinAMPPlayer:stopPolling()
+    if self._poll_callback then
+        UIManager:unschedule(self._poll_callback)
+    end
+end
+
+--=============================================================================
+-- Actions
+--=============================================================================
+
+--- Applies a change straight away instead of waiting for the next poll, so the
+-- button you pressed reacts immediately rather than up to a second later.
+function KinAMPPlayer:actAndRefresh(fn)
+    fn()
+    UIManager:scheduleIn(0.2, function() self:refresh() end)
+end
+
+function KinAMPPlayer:onPlayPause()
+    local status = Backend.get_status()
+    if not status then
+        -- Nothing running: start the saved queue.
+        local playlist = Backend.load_internal_playlist()
+        if #playlist == 0 then
+            local InfoMessage = require("ui/widget/infomessage")
+            UIManager:show(InfoMessage:new{ text = _("Playlist is empty!"), timeout = 2 })
+            return
+        end
+        self:actAndRefresh(function() Backend.play_internal_queue(playlist) end)
+        -- A cold start goes through the launcher script, which can take a few
+        -- seconds; keep checking until it answers.
+        Backend.wait_until_running(function() self:refresh(true) end)
+        return
+    end
+    self:actAndRefresh(function() Backend.pause() end)
+end
+
+function KinAMPPlayer:onNext()
+    self:actAndRefresh(function() Backend.next_track() end)
+end
+
+function KinAMPPlayer:onPrevious()
+    self:actAndRefresh(function() Backend.previous_track() end)
+end
+
+function KinAMPPlayer:showPlaylist()
+    local playlist = Backend.load_internal_playlist()
+    local status = Backend.get_status()
+    local items = {}
+
+    for idx, path in ipairs(playlist) do
+        local name = path:match("([^/]+)$") or path
+        local marker = (status and status.index == idx) and "\u{25B6} " or ""
+        table.insert(items, {
+            text = string.format("%s%d. %s", marker, idx, name),
+            callback = function()
+                self:actAndRefresh(function() Backend.play_from_index(idx) end)
+            end,
+        })
+    end
+    if #items == 0 then
+        table.insert(items, { text = _("(Empty - add folders from the KinAMP menu)") })
+    end
+
+    self:showList(_("Playlist"), items)
+end
+
+function KinAMPPlayer:showStations()
+    local items = {}
+    for _idx, station in ipairs(Backend.get_stations()) do
+        table.insert(items, {
+            text = station.name,
+            callback = function()
+                self:actAndRefresh(function() Backend.play_radio(station.url) end)
+            end,
+        })
+    end
+    if #items == 0 then
+        table.insert(items, { text = _("No stations found") })
+    end
+
+    self:showList(_("Radio Stations"), items)
+end
+
+function KinAMPPlayer:showList(title, items)
+    local menu
+    menu = Menu:new{
+        title = title,
+        item_table = items,
+        is_popout = true,
+        is_borderless = false,
+        width = math.floor(Screen:getWidth() * 0.9),
+        height = math.floor(Screen:getHeight() * 0.8),
+        close_callback = function() UIManager:close(menu) end,
+    }
+    UIManager:show(menu)
+end
+
+--=============================================================================
+-- Events
+--=============================================================================
+
+function KinAMPPlayer:onTap(arg, ges)
+    -- Tapping the progress bar seeks, which is the whole reason the player
+    -- publishes a position at all. Only when the bar is the widget currently in
+    -- the layout: on radio it is swapped out, and its dimen would be a stale
+    -- leftover from the last track that had one.
+    local bar = self.progress_bar.dimen
+    if bar and self.progress_group[1] == self.progress_bar and ges.pos:intersectWith(bar) then
+        local status = self.last
+        if status and not status.is_radio and status.dur and status.dur > 0 then
+            local ratio = math.max(0, math.min(1, (ges.pos.x - bar.x) / bar.w))
+            self:actAndRefresh(function() Backend.seek(ratio * status.dur) end)
+        end
+        return true
+    end
+
+    -- Anywhere outside the dialog closes it.
+    if self.frame.dimen and ges.pos:notIntersectWith(self.frame.dimen) then
+        self:onClose()
+        return true
+    end
+    return true
+end
+
+function KinAMPPlayer:onShow()
+    self:refresh(true)
+    self:startPolling()
+    UIManager:setDirty(self, function()
+        return "ui", self.frame.dimen
+    end)
+    return true
+end
+
+function KinAMPPlayer:onClose()
+    UIManager:close(self)
+    return true
+end
+
+function KinAMPPlayer:onCloseWidget()
+    self:stopPolling()
+    UIManager:setDirty(nil, function()
+        return "ui", self.frame.dimen
+    end)
+    self:free()
+end
+
+function KinAMPPlayer:onAnyKeyPressed()
+    self:onClose()
+    return true
+end
+
+return KinAMPPlayer

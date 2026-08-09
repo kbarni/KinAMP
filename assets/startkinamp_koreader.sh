@@ -1,23 +1,48 @@
 #!/bin/sh
+#
+# Launcher used by the KOReader plugin. Unlike startkinamp.sh (which hands
+# playback over from the GTK player and lets it end on its own), this starts the
+# player in --daemon mode: it stays alive after the playlist ends and takes
+# commands on the .kinamp_cmd FIFO, so the plugin can pause/skip/seek without
+# restarting the process.
 
-KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "KinAMP-minimal-armel") 
+KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "KinAMP-minimal-armel")
 
-LIBDIR=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "libs_hf/" || echo "libs_pw2/") 
-export LD_LIBRARY_PATH=$LIBDIR 
+LIBDIR=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "libs_hf/" || echo "libs_pw2/")
+export LD_LIBRARY_PATH=$LIBDIR
 
-is_process_running() {
-    local process_name="$1"
-    pgrep "$process_name" > /dev/null 2>&1
+KINAMP_DIR=/mnt/us/KinAMP
+STATUS_FILE="$KINAMP_DIR/.kinamp_status"
+
+# /proc/<pid>/comm is truncated to 15 characters, so a plain `pgrep
+# KinAMP-minimal-armel` never matches on PW2. Prefer the pid from the status
+# file and fall back to a full-cmdline match.
+background_pid() {
+    if [ -f "$STATUS_FILE" ]; then
+        pid=$(sed -n 's/^pid=//p' "$STATUS_FILE" | head -n 1)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return 0
+        fi
+    fi
+    pgrep -f "$KINAMPMIN" 2>/dev/null | head -n 1
 }
 
-# Check if KinAMP needs to be stopped.
-if is_process_running $KINAMPMIN; then
-    pkill $KINAMPMIN
-    sleep 2
-    if is_process_running $KINAMPMIN; then
-        pkill -9 $KINAMPMIN
+# The player cleans up its FIFO and status file on SIGTERM, so give it a chance
+# before escalating.
+pid=$(background_pid)
+if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null
+    i=0
+    while [ $i -lt 3 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null
+        rm -f "$STATUS_FILE" "$KINAMP_DIR/.kinamp_cmd"
     fi
 fi
-    
-cd /mnt/us/KinAMP/
-./$KINAMPMIN $1 $2
+
+cd "$KINAMP_DIR"
+./$KINAMPMIN --daemon "$@"
