@@ -350,6 +350,17 @@ static void queue_tag_scan(AppData *app_data, bool restart) {
     }
 }
 
+// Decides whether an m3u line names a track, and cleans it up in place.
+// Playlists written elsewhere carry #EXTM3U/#EXTINF directives, which are not
+// paths, and often use CRLF line endings, whose trailing CR would otherwise
+// become part of the file name and make every entry unopenable.
+static bool m3u_entry(std::string *line) {
+    while (!line->empty() && (*line->rbegin() == '\r' || *line->rbegin() == '\n')) {
+        line->erase(line->size() - 1);
+    }
+    return !line->empty() && (*line)[0] != '#';
+}
+
 // Adds a row showing the file name, to be replaced by the tags once the scan
 // reaches it. Every playlist insertion goes through here.
 static void playlist_append(GtkListStore *store, const char *file_path) {
@@ -579,7 +590,7 @@ void load_state(AppData *app_data) {
         gtk_list_store_clear(app_data->playlist_store);
         std::string line;
         while (std::getline(infile, line)) {
-            if (!line.empty()) {
+            if (m3u_entry(&line)) {
                 playlist_append(app_data->playlist_store, line.c_str());
             }
         }
@@ -1145,7 +1156,7 @@ void on_load_clicked(GtkWidget *widget, gpointer data) {
             gtk_list_store_clear(playlist_store);
             std::string line;
             while (std::getline(infile, line)) {
-                if (!line.empty()) {
+                if (m3u_entry(&line)) {
                     playlist_append(playlist_store, line.c_str());
                 }
             }
