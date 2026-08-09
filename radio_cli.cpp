@@ -2,6 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -20,8 +25,42 @@ bool case_insensitive_contains(const std::string& str, const std::string& sub);
 
 bool ends_with_ci(const std::string& str, const std::string& suffix) {
     if (str.size() < suffix.size()) return false;
-    return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin(), 
+    return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin(),
         [](unsigned char a, unsigned char b){ return std::tolower(a) == std::tolower(b); });
+}
+
+// Many station URLs hide the extension behind a query string
+// (e.g. http://host/listen.pls?sid=25), so test the path only.
+std::string url_path(const std::string& url) {
+    size_t cut = url.find_first_of("?#");
+    return (cut == std::string::npos) ? url : url.substr(0, cut);
+}
+
+bool url_has_ext(const std::string& url, const std::string& ext) {
+    return ends_with_ci(url_path(url), ext);
+}
+
+std::string trim(const std::string& s) {
+    size_t b = 0, e = s.size();
+    while (b < e && isspace((unsigned char)s[b])) b++;
+    while (e > b && isspace((unsigned char)s[e - 1])) e--;
+    return s.substr(b, e - b);
+}
+
+// Playlist entries may be relative to the playlist's own location.
+std::string resolve_relative(const std::string& base, const std::string& ref) {
+    if (ref.find("://") != std::string::npos) return ref;
+    std::string b = url_path(base);
+    size_t scheme = b.find("://");
+    if (scheme == std::string::npos) return ref;
+
+    if (!ref.empty() && ref[0] == '/') {
+        size_t slash = b.find('/', scheme + 3);
+        return (slash == std::string::npos ? b : b.substr(0, slash)) + ref;
+    }
+    size_t slash = b.find_last_of('/');
+    if (slash == std::string::npos || slash < scheme + 3) return b + "/" + ref;
+    return b.substr(0, slash + 1) + ref;
 }
 
 struct Station {
@@ -208,7 +247,7 @@ void show_main_menu() {
     printf("Your choice: ");
 
     char choice[10];
-    if (!fgets(choice, sizeof(choice), stdin)) return;
+    if (!fgets(choice, sizeof(choice), stdin)) exit(0); // EOF: don't spin forever
 
     switch (choice[0]) {
         case '1': list_stations(); break;
@@ -235,39 +274,170 @@ void list_stations() {
     wait_for_enter();
 }
 
-std::vector<std::string> fetch_playlist_urls(const std::string& url) {
+// Fetch at most max_bytes of a URL. Uses fork/exec rather than popen so that
+// station URLs (which come from a downloaded database) are never seen by a shell.
+std::string http_fetch(const std::string& url, size_t max_bytes, int timeout_sec) {
+    int pipefd[2];
+    if (pipe(pipefd) == -1) return "";
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return "";
+    }
+
+    if (pid == 0) { // Child
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        char tbuf[16];
+        snprintf(tbuf, sizeof(tbuf), "%d", timeout_sec);
+        execlp("wget", "wget", "-q", "-T", tbuf, "-t", "1",
+               "--no-check-certificate", "-O", "-", url.c_str(), (char*)NULL);
+        _exit(1);
+    }
+
+    close(pipefd[1]);
+    std::string body;
+    char buf[1024];
+    while (body.size() < max_bytes) {
+        ssize_t n = read(pipefd[0], buf, sizeof(buf));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        body.append(buf, n);
+    }
+    close(pipefd[0]);
+
+    // We may have stopped short of the end (or of an endless audio stream).
+    kill(pid, SIGTERM);
+    waitpid(pid, NULL, 0);
+    return body;
+}
+
+// Decide from the body, not the URL: a .m3u can serve [playlist] and plenty of
+// extensionless endpoints (listen.php?port=...) are playlists too.
+bool looks_like_playlist(const std::string& body) {
+    std::string head = trim(body.substr(0, 512));
+    if (head.empty()) return false;
+    if (case_insensitive_contains(head.substr(0, 32), "[playlist]")) return true;
+    if (case_insensitive_contains(head.substr(0, 32), "#EXTM3U")) return true;
+    // A bare list of stream URLs is a valid (extension-less) M3U.
+    return head.compare(0, 7, "http://") == 0 || head.compare(0, 8, "https://") == 0;
+}
+
+std::vector<std::string> parse_playlist(const std::string& body, const std::string& base_url) {
     std::vector<std::string> urls;
-    std::string cmd = "wget -q -O - \"" + url + "\"";
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return urls;
+    bool is_pls = case_insensitive_contains(trim(body).substr(0, 32), "[playlist]");
 
-    char buffer[1024];
-    bool is_pls = ends_with_ci(url, ".pls");
+    size_t pos = 0;
+    bool first_line = true;
+    while (pos < body.size()) {
+        size_t eol = body.find('\n', pos);
+        if (eol == std::string::npos) eol = body.size();
+        std::string line = trim(body.substr(pos, eol - pos));
+        pos = eol + 1;
 
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-        buffer[strcspn(buffer, "\r\n")] = 0; // trim newline
-        std::string line = buffer;
+        if (first_line) {
+            first_line = false;
+            if (line.compare(0, 3, "\xEF\xBB\xBF") == 0) line = trim(line.substr(3));
+        }
         if (line.empty()) continue;
 
+        std::string entry;
         if (is_pls) {
-            // Check for FileX=url
-            if (line.size() > 4 && std::tolower(line[0]) == 'f' && 
-                                   std::tolower(line[1]) == 'i' && 
-                                   std::tolower(line[2]) == 'l' && 
-                                   std::tolower(line[3]) == 'e') {
-                 size_t eq = line.find('=');
-                 if (eq != std::string::npos) {
-                     urls.push_back(line.substr(eq + 1));
-                 }
+            // FileN=url ; skip TitleN= / LengthN= / NumberOfEntries=
+            if (line.size() > 4 &&
+                tolower((unsigned char)line[0]) == 'f' &&
+                tolower((unsigned char)line[1]) == 'i' &&
+                tolower((unsigned char)line[2]) == 'l' &&
+                tolower((unsigned char)line[3]) == 'e') {
+                size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                entry = trim(line.substr(eq + 1));
             }
         } else {
-            // M3U
-            if (line[0] == '#') continue;
-            urls.push_back(line);
+            if (line[0] == '#') continue; // #EXTM3U, #EXTINF, comments
+            entry = line;
+        }
+
+        if (entry.empty()) continue;
+        entry = resolve_relative(base_url, entry);
+        if (std::find(urls.begin(), urls.end(), entry) == urls.end()) {
+            urls.push_back(entry);
         }
     }
-    pclose(pipe);
     return urls;
+}
+
+// Formats the player cannot decode yet.
+bool is_unsupported_stream(const std::string& url) {
+    return url_has_ext(url, ".aac") || url_has_ext(url, ".m3u8");
+}
+
+// Follows .pls/.m3u (and content-sniffed) playlists down to a real stream URL.
+// Returns false if the user cancelled or nothing usable was found.
+bool resolve_playlist_url(Station& station, int depth = 0) {
+    const int MAX_DEPTH = 3;
+    if (depth >= MAX_DEPTH) return true; // stop unwrapping, use what we have
+
+    bool named_playlist = url_has_ext(station.url, ".pls") || url_has_ext(station.url, ".m3u");
+    bool known_audio = url_has_ext(station.url, ".mp3") || url_has_ext(station.url, ".aac") ||
+                       url_has_ext(station.url, ".ogg") || url_has_ext(station.url, ".opus") ||
+                       url_has_ext(station.url, ".flac") || url_has_ext(station.url, ".m3u8");
+
+    // Only probe when the name gives us nothing to go on, so we don't pull audio
+    // from every station just to classify it.
+    if (!named_playlist && known_audio) return true;
+
+    printf("Resolving playlist...\n");
+    fflush(stdout);
+    std::string body = http_fetch(station.url, named_playlist ? 65536 : 2048, 3);
+    if (body.empty()) {
+        if (named_playlist) {
+            printf("Could not download the playlist.\n");
+            wait_for_enter();
+            return false;
+        }
+        return true; // probe failed; treat as a direct stream
+    }
+    if (!looks_like_playlist(body)) return true;
+
+    std::vector<std::string> streams = parse_playlist(body, station.url);
+    if (streams.empty()) {
+        printf("No streams found in playlist.\n");
+        wait_for_enter();
+        return false;
+    }
+
+    if (streams.size() == 1) {
+        printf("  -> %s\n", streams[0].c_str());
+        station.url = streams[0];
+    } else {
+        clear_screen();
+        printf("Select stream from playlist:\n");
+        for (size_t k = 0; k < streams.size(); ++k) {
+            printf("%zu. %s%s\n", k + 1, streams[k].c_str(),
+                   is_unsupported_stream(streams[k]) ? "  (unsupported)" : "");
+        }
+        printf("c. Cancel\n");
+        printf("Choice: ");
+
+        char subinput[10];
+        if (!fgets(subinput, sizeof(subinput), stdin)) return false;
+        if (!isdigit((unsigned char)subinput[0])) return false;
+        size_t subchoice = atoi(subinput);
+        if (subchoice < 1 || subchoice > streams.size()) return false;
+        station.url = streams[subchoice - 1];
+    }
+
+    // A playlist may point at another playlist (shoutcast tunein-station.pls).
+    return resolve_playlist_url(station, depth + 1);
 }
 
 void add_station() {
@@ -326,44 +496,14 @@ void add_station() {
             if (choice >= 1 && choice <= found.size()) {
                 Station selected = found[choice - 1];
 
-                if (ends_with_ci(selected.url, ".aac") || ends_with_ci(selected.url, ".m3u8")) {
+                if (!resolve_playlist_url(selected)) continue;
+
+                // Re-check after resolving: a playlist can point at a format
+                // the player cannot decode yet.
+                if (is_unsupported_stream(selected.url)) {
                     printf("AAC is currently not supported\n");
                     wait_for_enter();
-                    continue; 
-                }
-
-                if (ends_with_ci(selected.url, ".m3u") || ends_with_ci(selected.url, ".pls")) {
-                    printf("Downloading playlist...\n");
-                    std::vector<std::string> streams = fetch_playlist_urls(selected.url);
-                    if (streams.empty()) {
-                        printf("No streams found in playlist.\n");
-                        wait_for_enter();
-                        continue;
-                    }
-                    
-                    clear_screen();
-                    printf("Select stream from playlist:\n");
-                    for (size_t k = 0; k < streams.size(); ++k) {
-                        printf("%zu. %s\n", k + 1, streams[k].c_str());
-                    }
-                    printf("c. Cancel\n");
-                    printf("Choice: ");
-                    char subinput[10];
-                    if (fgets(subinput, sizeof(subinput), stdin)) {
-                        if (subinput[0] == 'c' || subinput[0] == 'C') continue;
-                        if (isdigit(subinput[0])) {
-                            size_t subchoice = atoi(subinput);
-                            if (subchoice >= 1 && subchoice <= streams.size()) {
-                                selected.url = streams[subchoice - 1];
-                            } else {
-                                continue;
-                            }
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
+                    continue;
                 }
 
                 // Add station
@@ -398,38 +538,12 @@ void add_station_manual() {
     selected.name = name_buffer;
     selected.url = url_buffer;
 
-    if (ends_with_ci(selected.url, ".m3u") || ends_with_ci(selected.url, ".pls")) {
-        printf("Downloading playlist...\n");
-        std::vector<std::string> streams = fetch_playlist_urls(selected.url);
-        if (streams.empty()) {
-            printf("No streams found in playlist.\n");
-            wait_for_enter();
-            return;
-        }
-        
-        clear_screen();
-        printf("Select stream from playlist:\n");
-        for (size_t k = 0; k < streams.size(); ++k) {
-            printf("%zu. %s\n", k + 1, streams[k].c_str());
-        }
-        printf("c. Cancel\n");
-        printf("Choice: ");
-        char subinput[10];
-        if (fgets(subinput, sizeof(subinput), stdin)) {
-            if (subinput[0] == 'c' || subinput[0] == 'C') return;
-            if (isdigit(subinput[0])) {
-                size_t subchoice = atoi(subinput);
-                if (subchoice >= 1 && subchoice <= streams.size()) {
-                    selected.url = streams[subchoice - 1];
-                } else {
-                    return;
-                }
-            } else {
-                return;
-            }
-        } else {
-            return;
-        }
+    if (!resolve_playlist_url(selected)) return;
+
+    if (is_unsupported_stream(selected.url)) {
+        printf("AAC is currently not supported\n");
+        wait_for_enter();
+        return;
     }
 
     user_stations.push_back(selected);
