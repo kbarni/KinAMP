@@ -98,6 +98,25 @@ struct AppData {
 // Defined below save_state(), but needed by the sleep timer in update_progress_cb().
 void quit_app(AppData *app_data);
 
+// Where the "Add file" and "Add folder" dialogs start browsing. Without this
+// they open in the working directory, which is the install directory - never
+// where the music is. KINAMP_MUSIC_FOLDER overrides the default; the KOReader
+// plugin honours the same variable.
+static const char *music_folder() {
+    const char *env = g_getenv("KINAMP_MUSIC_FOLDER");
+    if (env && *env) return env;
+    return "/mnt/us/music";
+}
+
+// Left alone if the folder does not exist, so GTK keeps its own default rather
+// than landing the user somewhere that cannot be listed.
+static void set_start_folder(GtkFileChooser *chooser) {
+    const char *folder = music_folder();
+    if (g_file_test(folder, G_FILE_TEST_IS_DIR)) {
+        gtk_file_chooser_set_current_folder(chooser, folder);
+    }
+}
+
 static LIPC * lipcInstance = 0;
 
 void openLipcInstance() {
@@ -829,6 +848,26 @@ void play_selected_song(AppData* app_data) {
     }
 }
 
+// Double-clicking a row (or pressing Enter on it) plays it. GTK selects the row
+// before emitting this, but the cursor is set explicitly so the handler does not
+// depend on that ordering. Works in radio mode too, since play_selected_song()
+// reads whichever model is currently bound.
+static void on_playlist_row_activated(GtkTreeView *tree_view, GtkTreePath *path,
+                                      GtkTreeViewColumn *column, gpointer data) {
+    (void)column;
+    AppData *app_data = (AppData*)data;
+
+    // Same guard as the play/pause button: starting a track while the backend is
+    // tearing the previous one down races with it.
+    if (app_data->backend->is_shutting_down()) {
+        g_print("UI: Backend is stopping, ignoring row activation.\n");
+        return;
+    }
+
+    gtk_tree_view_set_cursor(tree_view, path, NULL, FALSE);
+    play_selected_song(app_data);
+}
+
 void on_previous_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
     AppData *app_data = (AppData*)data;
@@ -1078,6 +1117,7 @@ void on_add_file_clicked(GtkWidget *widget, gpointer data) {
                                                   GTK_STOCK_OPEN, GTK_RESPONSE_ACCEPT,
                                                   NULL);
     gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(dialog), TRUE);
+    set_start_folder(GTK_FILE_CHOOSER(dialog));
 
     GtkFileFilter *filter = gtk_file_filter_new();
     gtk_file_filter_set_name(filter, "Music files");
@@ -1107,6 +1147,7 @@ void on_add_folder_clicked(GtkWidget *widget, gpointer data) {
                                                   GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
                                                   GTK_STOCK_OPEN, GTK_RESPONSE_ACCEPT,
                                                   NULL);
+    set_start_folder(GTK_FILE_CHOOSER(dialog));
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
         char *folder_path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
@@ -1875,6 +1916,8 @@ int main(int argc, char* argv[]) {
     GtkWidget *playlist_treeview = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app_data.playlist_store));
     app_data.playlist_treeview = GTK_TREE_VIEW(playlist_treeview);
     gtk_container_add(GTK_CONTAINER(scrolled_window), playlist_treeview);
+    g_signal_connect(playlist_treeview, "row-activated",
+                     G_CALLBACK(on_playlist_row_activated), &app_data);
 
     GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *column = gtk_tree_view_column_new();

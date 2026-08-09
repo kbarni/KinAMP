@@ -20,8 +20,10 @@ end
 
 local bin_folder = find_bin_folder()
 
+-- KINAMP_MUSIC_FOLDER is shared with the GTK player, which uses it as the start
+-- folder for its add file/folder dialogs.
 local function find_music_dir()
-    local env_dir = os.getenv("KINAMP_MUSIC_DIR")
+    local env_dir = os.getenv("KINAMP_MUSIC_FOLDER")
     if env_dir and lfs.attributes(env_dir, "mode") == "directory" then
         return env_dir
     end
