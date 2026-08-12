@@ -102,13 +102,18 @@ static void play_index(CliState* state, int index);
 //
 // Note what is NOT here: any write to BTenable. The stock keepalive sequence
 // cycles the radio (BTenable 0:1 -> flag -> 1:1), which disconnects the
-// headphones for several seconds and makes most devices chime on reconnect.
-// startkinamp.sh and the GTK player already do that cycle once at GUI launch;
-// repeating it per track would be audible every time. We only ever write the
-// flag, which disturbs nothing. The open question (see
-// KOREADER-BT-ANALYSIS-AND-PLAN.md 2.6) is whether btfd latches the flag when
-// it is written live, or only reads it at radio-init - if the latter, the
-// keepalive will not engage on the KOReader path, where nothing cycles the radio.
+// headphones for several seconds and makes most devices chime on reconnect;
+// repeating that per track would be audible every time. We only ever write the
+// flag, which disturbs nothing.
+//
+// That does mean this write alone arms nothing: btfd reads ensureBTconnection
+// when the radio comes up and never again, so it has to be raised into a gap
+// somebody else opens. Both launch paths open one before we exist -
+// startkinamp.sh takes the radio down ahead of the GTK player, and the KOReader
+// plugin cycles it in kinamp_bt.lua's armKeepalive() before starting us. What
+// our own write is for is the other end: lowering the flag on exit, so the next
+// radio init does not inherit a keepalive nobody asked for, and raising it again
+// for any cycle that happens while we are playing.
 //
 // liblipc only exists on the Kindle; on the desktop host these are no-ops.
 #ifdef KINAMP_HAVE_LIPC

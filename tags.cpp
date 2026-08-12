@@ -1,6 +1,7 @@
 #include "tags.h"
 
 #include <glib.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <vector>
@@ -273,6 +274,15 @@ void parse_id3v2(FILE* f, AudioTags* out) {
     }
 }
 
+// The duration estimate has to leave an ID3v1 tag out of the audio byte count,
+// whether or not the tag turned out to be needed for its fields.
+bool has_id3v1_tag(FILE* f) {
+    unsigned char tag[3];
+    if (fseek(f, -128L, SEEK_END) != 0) return false;
+    if (fread(tag, 1, sizeof(tag), f) != sizeof(tag)) return false;
+    return memcmp(tag, "TAG", 3) == 0;
+}
+
 void parse_id3v1(FILE* f, AudioTags* out) {
     unsigned char tag[128];
     if (fseek(f, -128L, SEEK_END) != 0) return;
@@ -541,6 +551,329 @@ void parse_wav(FILE* f, long offset, AudioTags* out) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Duration
+// ---------------------------------------------------------------------------
+//
+// Every length below is read out of a header: a movie header atom, a FLAC
+// STREAMINFO block, an Ogg granule position, a RIFF chunk size, an MP3 Xing
+// frame count. Decoding a file to the end would be exact, but the playlist scan
+// runs over every file the user added, and on the Kindle's storage that costs
+// seconds per track. Headers cost a few seeks.
+
+const size_t MAX_OGG_TAIL = 128u * 1024;  // larger than one maximum sized page
+const size_t MAX_MP3_SCAN = 128u * 1024;  // junk tolerated before the first frame
+
+unsigned long long le64(const unsigned char* p) {
+    unsigned long long v = 0;
+    for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
+    return v;
+}
+
+// Rounds to the nearest second, so a track of 239.6 seconds reads as 4:00 and
+// not 3:59. A zero divisor means the header did not say, which is not an error:
+// the caller shows the row without a length.
+int seconds_from(unsigned long long units, unsigned long long per_second) {
+    if (per_second == 0 || units == 0) return 0;
+    unsigned long long secs = (units + per_second / 2) / per_second;
+    return (secs > (unsigned long long)INT_MAX) ? 0 : (int)secs;
+}
+
+// MP4: moov.mvhd carries the movie timescale and duration.
+int mp4_duration(FILE* f, long start, long file_end) {
+    long moov_b = 0, moov_e = 0;
+    if (!find_atom(f, start, file_end, "moov", &moov_b, &moov_e)) return 0;
+
+    long mvhd_b = 0, mvhd_e = 0;
+    if (!find_atom(f, moov_b, moov_e, "mvhd", &mvhd_b, &mvhd_e)) return 0;
+
+    Buffer d;
+    if (!read_at(f, mvhd_b, (size_t)(mvhd_e - mvhd_b), &d) || d.empty()) return 0;
+
+    // A full box: the first byte of the version/flags word selects the layout.
+    if (d[0] == 1) {
+        if (d.size() < 32) return 0;
+        unsigned long long duration =
+            ((unsigned long long)be32(&d[24]) << 32) | be32(&d[28]);
+        return seconds_from(duration, be32(&d[20]));
+    }
+    if (d.size() < 20) return 0;
+    unsigned duration = be32(&d[16]);
+    if (duration == 0xFFFFFFFFu) return 0;  // written when the length is unknown
+    return seconds_from(duration, be32(&d[12]));
+}
+
+// FLAC: STREAMINFO packs a 20 bit sample rate, 3 bits of channel count and 5 of
+// bit depth in front of a 36 bit total sample count, so the fields straddle
+// byte boundaries.
+int flac_streaminfo_duration(const unsigned char* p, size_t len) {
+    if (len < 18) return 0;
+    unsigned rate = ((unsigned)p[10] << 12) | ((unsigned)p[11] << 4) |
+                    ((unsigned)p[12] >> 4);
+    unsigned long long samples =
+        ((unsigned long long)(p[13] & 0x0F) << 32) | be32(p + 14);
+    return seconds_from(samples, rate);
+}
+
+int flac_duration(FILE* f, long offset) {
+    // STREAMINFO is mandatory and always comes first, so no block walk is needed.
+    Buffer block;
+    if (!read_at(f, offset + 4, 4 + 34, &block) || block.size() < 4 + 18) return 0;
+    if ((block[0] & 0x7F) != 0) return 0;
+    return flac_streaminfo_duration(&block[4], block.size() - 4);
+}
+
+// WAV: the sample count is implied by how many bytes of audio there are.
+int wav_duration(FILE* f, long offset, long file_end) {
+    unsigned char hdr[12];
+    if (fseek(f, offset, SEEK_SET) != 0) return 0;
+    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) return 0;
+    if (memcmp(hdr + 8, "WAVE", 4) != 0) return 0;
+
+    unsigned byte_rate = 0;
+    unsigned long long data_bytes = 0;
+
+    long pos = offset + 12;
+    for (int i = 0; i < MAX_BLOCKS; ++i) {
+        unsigned char ch[8];
+        if (fseek(f, pos, SEEK_SET) != 0) break;
+        if (fread(ch, 1, sizeof(ch), f) != sizeof(ch)) break;
+
+        size_t clen = le32(ch + 4);
+        pos += 8;
+
+        if (memcmp(ch, "fmt ", 4) == 0) {
+            unsigned char fmt[16];
+            if (fseek(f, pos, SEEK_SET) == 0 &&
+                fread(fmt, 1, sizeof(fmt), f) == sizeof(fmt)) {
+                byte_rate = le32(fmt + 8);
+            }
+        } else if (memcmp(ch, "data", 4) == 0) {
+            // Files written by a streaming encoder leave the size unfilled, in
+            // which case the audio runs to the end of the file.
+            long remaining = file_end - pos;
+            if (remaining < 0) remaining = 0;
+            data_bytes = (clen == 0 || clen > (size_t)remaining)
+                             ? (unsigned long long)remaining
+                             : clen;
+            break;
+        }
+        pos += (long)(clen + (clen & 1));
+    }
+    return seconds_from(data_bytes, byte_rate);
+}
+
+// Ogg: the granule position on the last page of a stream is its length in
+// samples, so the length needs the first packet (for the rate) and the tail of
+// the file (for the granule).
+struct OggInfo {
+    unsigned serial;
+    unsigned rate;      // granule ticks per second
+    unsigned pre_skip;  // Opus only: priming samples that are not audio
+    bool valid;
+
+    OggInfo() : serial(0), rate(0), pre_skip(0), valid(false) {}
+};
+
+void ogg_identify(const Buffer& packet, unsigned serial, OggInfo* info) {
+    if (packet.size() > 15 && packet[0] == 0x01 &&
+        memcmp(&packet[1], "vorbis", 6) == 0) {
+        info->rate = le32(&packet[12]);
+    } else if (packet.size() >= 19 && memcmp(&packet[0], "OpusHead", 8) == 0) {
+        // Opus granule positions are always counted at 48 kHz, whatever the
+        // original sample rate was.
+        info->rate = 48000;
+        info->pre_skip = ((unsigned)packet[11] << 8) | packet[10];
+    } else if (packet.size() > 29 && packet[0] == 0x7F &&
+               memcmp(&packet[1], "FLAC", 4) == 0) {
+        // 0x7F "FLAC", version and header count (4), then a whole FLAC stream:
+        // the "fLaC" marker and the STREAMINFO block header ahead of its body.
+        info->rate = ((unsigned)packet[27] << 12) | ((unsigned)packet[28] << 4) |
+                     ((unsigned)packet[29] >> 4);
+    }
+
+    if (info->rate > 0) {
+        info->serial = serial;
+        info->valid = true;
+    }
+}
+
+// The last page of the stream is near the end of the file, but padding or a
+// trailing tag can follow it, so the tail is scanned for the highest granule
+// position belonging to our stream rather than assuming the final page.
+unsigned long long ogg_last_granule(FILE* f, long file_end, unsigned serial) {
+    size_t want = (file_end > 0 && (size_t)file_end < MAX_OGG_TAIL)
+                      ? (size_t)file_end
+                      : MAX_OGG_TAIL;
+    Buffer tail;
+    if (!read_at(f, file_end - (long)want, want, &tail) || tail.size() < 27) {
+        return 0;
+    }
+
+    unsigned long long best = 0;
+    for (size_t pos = 0; pos + 27 <= tail.size(); ++pos) {
+        if (memcmp(&tail[pos], "OggS", 4) != 0) continue;
+        if (le32(&tail[pos + 14]) != serial) continue;
+
+        unsigned long long granule = le64(&tail[pos + 6]);
+        // -1 marks a page that completes no packet; it is not a length.
+        if (granule != 0xFFFFFFFFFFFFFFFFull && granule > best) best = granule;
+    }
+    return best;
+}
+
+int ogg_duration(FILE* f, long offset, long file_end) {
+    Buffer buf;
+    if (!read_at(f, offset, MAX_OGG_SCAN, &buf)) return 0;
+
+    // Only the first packet of the first logical stream is needed; the codec
+    // identification header is required to fit in a single page.
+    if (buf.size() < 27 || memcmp(&buf[0], "OggS", 4) != 0) return 0;
+    unsigned serial = le32(&buf[14]);
+    unsigned nsegs = buf[26];
+    size_t seg_table = 27;
+    if (seg_table + nsegs > buf.size()) return 0;
+
+    Buffer packet;
+    size_t off = seg_table + nsegs;
+    for (unsigned i = 0; i < nsegs; ++i) {
+        unsigned seg = buf[seg_table + i];
+        if (off + seg > buf.size()) return 0;
+        packet.insert(packet.end(), buf.begin() + off, buf.begin() + off + seg);
+        off += seg;
+        if (seg < 255) break;  // a short segment terminates the packet
+    }
+
+    OggInfo info;
+    ogg_identify(packet, serial, &info);
+    if (!info.valid) return 0;
+
+    unsigned long long granule = ogg_last_granule(f, file_end, info.serial);
+    if (granule <= info.pre_skip) return 0;
+    return seconds_from(granule - info.pre_skip, info.rate);
+}
+
+// ---------------------------------------------------------------------------
+// MP3 (frame header, plus the Xing/VBRI frame count when one is present)
+// ---------------------------------------------------------------------------
+
+struct Mp3Frame {
+    unsigned bitrate;      // bits per second
+    unsigned rate;         // samples per second
+    unsigned samples;      // samples per frame
+    size_t size;           // frame length in bytes
+    bool mono;
+    bool mpeg1;
+};
+
+bool parse_mp3_header(const unsigned char* h, Mp3Frame* out) {
+    if (h[0] != 0xFF || (h[1] & 0xE0) != 0xE0) return false;
+
+    unsigned version = (h[1] >> 3) & 0x03;  // 0: 2.5, 1: reserved, 2: 2, 3: 1
+    unsigned layer = (h[1] >> 1) & 0x03;    // 3: I, 2: II, 1: III, 0: reserved
+    unsigned bitrate_index = (h[2] >> 4) & 0x0F;
+    unsigned rate_index = (h[2] >> 2) & 0x03;
+    unsigned padding = (h[2] >> 1) & 0x01;
+    unsigned mode = (h[3] >> 6) & 0x03;
+
+    if (version == 1 || layer == 0) return false;
+    if (bitrate_index == 0 || bitrate_index == 0x0F) return false;  // free/invalid
+    if (rate_index == 3) return false;
+
+    static const unsigned rates[3][3] = {
+        { 11025, 12000, 8000 },   // MPEG 2.5
+        { 22050, 24000, 16000 },  // MPEG 2
+        { 44100, 48000, 32000 },  // MPEG 1
+    };
+    // Indexed by table then bitrate index; entry 0 is the unused "free" slot.
+    static const unsigned kbps[5][15] = {
+        { 0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448 },  // V1 L1
+        { 0, 32, 48, 56,  64,  80,  96, 112, 128, 160, 192, 224, 256, 320, 384 },  // V1 L2
+        { 0, 32, 40, 48,  56,  64,  80,  96, 112, 128, 160, 192, 224, 256, 320 },  // V1 L3
+        { 0, 32, 48, 56,  64,  80,  96, 112, 128, 144, 160, 176, 192, 224, 256 },  // V2 L1
+        { 0,  8, 16, 24,  32,  40,  48,  56,  64,  80,  96, 112, 128, 144, 160 },  // V2 L2/L3
+    };
+
+    bool mpeg1 = (version == 3);
+    unsigned rate_table = (version == 0) ? 0 : (version == 2 ? 1 : 2);
+    unsigned bitrate_table;
+    if (mpeg1) {
+        bitrate_table = (layer == 3) ? 0 : (layer == 2 ? 1 : 2);
+    } else {
+        bitrate_table = (layer == 3) ? 3 : 4;
+    }
+
+    out->rate = rates[rate_table][rate_index];
+    out->bitrate = kbps[bitrate_table][bitrate_index] * 1000;
+    out->mono = (mode == 3);
+    out->mpeg1 = mpeg1;
+
+    if (layer == 3) {          // Layer I
+        out->samples = 384;
+        out->size = (12 * out->bitrate / out->rate + padding) * 4;
+    } else {                   // Layer II and III
+        out->samples = (layer == 1 && !mpeg1) ? 576 : 1152;
+        out->size = out->samples / 8 * out->bitrate / out->rate + padding;
+    }
+    return out->size > 4;
+}
+
+// Xing sits after the side information, whose length depends on the version and
+// channel mode; VBRI always sits at a fixed offset. Returns the frame count the
+// header advertises, or 0 when neither header is there.
+unsigned long long mp3_vbr_frames(FILE* f, long frame_pos, const Mp3Frame& frame) {
+    size_t xing_at = frame.mpeg1 ? (frame.mono ? 21 : 36) : (frame.mono ? 13 : 21);
+
+    Buffer buf;
+    if (!read_at(f, frame_pos, frame.size, &buf)) return 0;
+
+    if (buf.size() >= xing_at + 12 &&
+        (memcmp(&buf[xing_at], "Xing", 4) == 0 ||
+         memcmp(&buf[xing_at], "Info", 4) == 0)) {
+        unsigned flags = be32(&buf[xing_at + 4]);
+        if (flags & 0x01) return be32(&buf[xing_at + 8]);
+        return 0;
+    }
+    if (buf.size() >= 36 + 18 && memcmp(&buf[36], "VBRI", 4) == 0) {
+        return be32(&buf[36 + 14]);
+    }
+    return 0;
+}
+
+int mp3_duration(FILE* f, long start, long file_end, bool has_id3v1) {
+    Buffer buf;
+    if (!read_at(f, start, MAX_MP3_SCAN, &buf) || buf.size() < 4) return 0;
+
+    // Some files carry junk between the tag and the first frame, and a lone sync
+    // pattern can occur inside it, so a candidate only counts when the frame it
+    // describes is followed by another sync word.
+    Mp3Frame frame;
+    long frame_pos = -1;
+    for (size_t i = 0; i + 4 <= buf.size(); ++i) {
+        if (!parse_mp3_header(&buf[i], &frame)) continue;
+
+        size_t next = i + frame.size;
+        if (next + 2 <= buf.size() &&
+            (buf[next] != 0xFF || (buf[next + 1] & 0xE0) != 0xE0)) {
+            continue;
+        }
+        frame_pos = start + (long)i;
+        break;
+    }
+    if (frame_pos < 0) return 0;
+
+    unsigned long long frames = mp3_vbr_frames(f, frame_pos, frame);
+    if (frames > 0) {
+        return seconds_from(frames * frame.samples, frame.rate);
+    }
+
+    // No VBR header, so assume the first frame's bitrate holds for the file.
+    long audio_end = file_end - (has_id3v1 ? 128 : 0);
+    if (audio_end <= frame_pos) return 0;
+    return seconds_from((unsigned long long)(audio_end - frame_pos) * 8,
+                        frame.bitrate);
+}
+
 }  // namespace
 
 bool read_audio_tags(const char* filepath, AudioTags* out) {
@@ -549,6 +882,7 @@ bool read_audio_tags(const char* filepath, AudioTags* out) {
     out->title.clear();
     out->artist.clear();
     out->album.clear();
+    out->duration_seconds = 0;
 
     FILE* f = fopen(filepath, "rb");
     if (f == NULL) return false;
@@ -577,23 +911,33 @@ bool read_audio_tags(const char* filepath, AudioTags* out) {
     bool known_container = true;
     if (memcmp(magic, "fLaC", 4) == 0) {
         parse_flac(f, start, out);
+        out->duration_seconds = flac_duration(f, start);
     } else if (memcmp(magic, "OggS", 4) == 0) {
         parse_ogg(f, start, out);
+        out->duration_seconds = ogg_duration(f, start, file_end);
     } else if (memcmp(magic, "RIFF", 4) == 0) {
         parse_wav(f, start, out);
+        out->duration_seconds = wav_duration(f, start, file_end);
     } else if (memcmp(magic + 4, "ftyp", 4) == 0) {
         parse_mp4(f, start, file_end, out);
+        out->duration_seconds = mp4_duration(f, start, file_end);
     } else {
         known_container = false;
     }
 
+    // Only MP3 and raw AAC reach for ID3v1: on a real container the last 128
+    // bytes are audio, and could match "TAG" by chance. The same goes for
+    // reading the stream as MPEG audio frames.
+    bool id3v1 = !known_container && has_id3v1_tag(f);
+
     if (has_id3 && needs_more(*out)) {
         parse_id3v2(f, out);
     }
-    // Only MP3 and raw AAC reach for ID3v1: on a real container the last 128
-    // bytes are audio, and could match "TAG" by chance.
-    if (!known_container && needs_more(*out)) {
+    if (id3v1 && needs_more(*out)) {
         parse_id3v1(f, out);
+    }
+    if (!known_container) {
+        out->duration_seconds = mp3_duration(f, start, file_end, id3v1);
     }
 
     fclose(f);

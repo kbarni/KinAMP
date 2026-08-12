@@ -339,6 +339,22 @@ static std::string now_playing_label(MusicBackend *backend, const char *full_pat
     return label.empty() ? file_name_of(full_path) : label;
 }
 
+// Lengths on the playlist rows read M:SS, growing to H:MM:SS for the audiobook
+// chapters that run past the hour. An unknown length shows nothing at all.
+static std::string format_duration(int seconds) {
+    if (seconds <= 0) return "";
+
+    char buf[32];
+    int hours = seconds / 3600;
+    int minutes = (seconds % 3600) / 60;
+    if (hours > 0) {
+        snprintf(buf, sizeof(buf), "%d:%02d:%02d", hours, minutes, seconds % 60);
+    } else {
+        snprintf(buf, sizeof(buf), "%d:%02d", minutes, seconds % 60);
+    }
+    return buf;
+}
+
 // Reading tags means opening every file, which is slow on Kindle storage and
 // would stall the UI for seconds when a folder is added. So rows go in with
 // their file name, and the tags replace it from an idle handler a few rows at a
@@ -366,21 +382,22 @@ static gboolean scan_playlist_tags_cb(gpointer data) {
                            PLAYLIST_COL_SCANNED, &done, -1);
 
         if (path != NULL && !done) {
+            // The return value only reports the text tags, and a file with none
+            // of those can still have had its length read, so both are taken
+            // from the struct.
             AudioTags tags;
-            std::string label;
-            if (read_audio_tags(path, &tags)) {
-                label = format_track_label(tags.artist, tags.title);
-            }
+            read_audio_tags(path, &tags);
 
             // Untagged files keep the file name they went in with.
-            if (label.empty()) {
-                gtk_list_store_set(app_data->playlist_store, &iter,
-                                   PLAYLIST_COL_SCANNED, TRUE, -1);
-            } else {
-                gtk_list_store_set(app_data->playlist_store, &iter,
-                                   PLAYLIST_COL_DISPLAY, label.c_str(),
-                                   PLAYLIST_COL_SCANNED, TRUE, -1);
-            }
+            std::string label = format_track_label(tags.artist, tags.title);
+            if (label.empty()) label = file_name_of(path);
+
+            std::string length = format_duration(tags.duration_seconds);
+            if (!length.empty()) label += " (" + length + ")";
+
+            gtk_list_store_set(app_data->playlist_store, &iter,
+                               PLAYLIST_COL_DISPLAY, label.c_str(),
+                               PLAYLIST_COL_SCANNED, TRUE, -1);
             scanned++;
         }
         g_free(path);
