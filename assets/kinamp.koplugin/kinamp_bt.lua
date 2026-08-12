@@ -32,11 +32,18 @@ read time rather than hardcoded - see normalise() - and the raw shape is logged
 once per property so it can be read out of kinamp.log if the guesswork ever
 misses.
 
-On ownership of ensureBTconnection: KinAMP-minimal raises the flag for its own
-lifetime whenever it plays something (cli_player.cpp), and it is not our place
-to lower it under a daemon that is still playing. We only ever move the flag as
-part of a radio transition the user asked for, where the radio is going away
-anyway.
+The one thing to know about ensureBTconnection is that btfd only reads it when
+the radio initialises. Writing it to a radio that is already up sets a value
+nothing will ever look at again - which is why the stock sequence puts a radio
+cycle around the write, startkinamp.sh taking the radio down and
+music_player.cpp setting the flag and bringing it back up. Everything here that
+raises the flag therefore raises it with the radio down. See armKeepalive().
+
+On ownership of the flag: KinAMP-minimal raises it for its own lifetime whenever
+it plays something (cli_player.cpp), and it is not our place to lower it under a
+daemon that is still playing. We only ever move it as part of a radio transition
+- one the user asked for, or the one a starting daemon needs - where the radio
+is going away regardless.
 --]]
 
 local UIManager = require("ui/uimanager")
@@ -60,6 +67,13 @@ local BT = {
     -- checkbox cannot start a competing sequence.
     busy = false,
 }
+
+-- True once ensureBTconnection has been written with the radio down *and* the
+-- radio has come back up on top of it, which is the only way btfd takes it.
+-- Nothing can read the flag back - it is write-only - so this is the only record
+-- there is, and it is deliberately per-session: a radio that went down and came
+-- back up without us is one we have to assume dropped the flag.
+local keepalive_armed = false
 
 --=============================================================================
 -- The lipc handle
@@ -362,13 +376,11 @@ end
 
 --- Turns the radio on or off, keepalive flag and all.
 --
--- The order is the stock interface's, which is the one known to take: the flag
--- is written while the radio is *down* (BTenable 0:1 -> ensureBTconnection 1 ->
--- BTenable 1:1). Whether btfd latches it at radio-init or reads it live is not
--- known, so we do what is known to work. Turning the radio on is also the one
--- moment the flag can be raised for free: the radio is coming up anyway, so
--- there is no cycle and nothing audible - unlike the stock sequence, we never
--- take a working radio down just to set a flag.
+-- The flag is written first, while the radio is still down, because that is the
+-- only point at which btfd will take it. Turning the radio on is therefore the
+-- one moment the keepalive can be armed for free: the radio is coming up
+-- anyway, so there is no cycle and nothing audible. Arming it at any other time
+-- costs a cycle - see armKeepalive().
 --
 -- @param on true to bring the radio up
 -- @param done_cb called with (true) or (false, reason)
@@ -382,9 +394,11 @@ function BT.setEnabled(on, done_cb)
     local state = BT.getState()
     if state == nil then return done_cb(false, "unavailable") end
     if state == target then
-        -- Already there. Still worth making sure the flag agrees with the
-        -- radio, which is cheap and fixes a flag stranded by a killed player.
+        -- Already there. The write still goes out - it costs nothing, and it
+        -- lowers a flag stranded by a killed player - but it cannot arm
+        -- anything: btfd is past the point where it would read it.
         BT.setEnsure(on)
+        if not on then keepalive_armed = false end
         return done_cb(true)
     end
 
@@ -397,6 +411,11 @@ function BT.setEnabled(on, done_cb)
 
     await_state(target, function(ok, err)
         BT.busy = false
+        if ok then
+            -- The flag went down before the radio did and up before it came
+            -- back, so this transition is exactly the one btfd reads it on.
+            keepalive_armed = on
+        end
         if ok and on then
             -- btfd reconnects the last device by itself most of the time; this
             -- is for when it does not, and costs nothing when it already has.
@@ -407,6 +426,71 @@ function BT.setEnabled(on, done_cb)
         end
         done_cb(ok, err)
     end)
+end
+
+--- Makes sure the keepalive is one btfd has actually taken, cycling the radio
+-- if that is what it costs.
+--
+-- This is the whole stock startup sequence, and the reason it exists: the flag
+-- only takes at radio-init, so a player that starts against an already-running
+-- radio gets no keepalive at all and loses the device twenty minutes later.
+-- startkinamp.sh solves it by taking the radio down (BTenable 0:1) before the
+-- GTK player comes up and sets the flag and raises the radio again; the KOReader
+-- path has no such script, so it is done here instead - with the script's
+-- sleep 1 replaced by waiting for BTstate to actually reach 0.
+--
+-- Called as a daemon is starting, which is where the cycle costs least: the link
+-- goes for several seconds, and there is no audio yet to cut into. At most once
+-- per session, because after the first one the flag is already latched.
+--
+-- Like the GTK player, this ends with the radio *on* even if it started off -
+-- Bluetooth is the only way sound leaves the device, so a player starting
+-- against a dead radio would just be silent.
+--
+-- @param done_cb called with (true), or (false, reason); always called
+-- @return true if it finished synchronously, false if a cycle is in flight
+function BT.armKeepalive(done_cb)
+    done_cb = done_cb or function() end
+
+    if not get_handle() then done_cb(false, "unavailable") return true end
+
+    local state = BT.getState()
+    if state == nil then done_cb(false, "unavailable") return true end
+    if BT.busy then done_cb(false, "busy") return true end
+
+    if state ~= 0 and keepalive_armed then
+        -- Latched already, and the radio has not been down since. Cycling again
+        -- would drop the link for nothing.
+        done_cb(true)
+        return true
+    end
+
+    if state == 0 then
+        -- Down already, which is exactly the state the flag wants writing in:
+        -- no cycle needed, just the second half of the sequence.
+        BT.setEnabled(true, done_cb)
+        return false
+    end
+
+    -- Up, and not armed. Take it down first; setEnabled then writes the flag
+    -- into the gap and brings it back.
+    BT.busy = true
+    if not BT.setRadio(false) then
+        BT.busy = false
+        done_cb(false, "write failed")
+        return true
+    end
+    await_state(0, function(ok)
+        BT.busy = false
+        if not ok then
+            -- Leave the radio to btfd rather than trying to undo half a cycle:
+            -- a radio that will not go down is one we understand too little of.
+            done_cb(false, "timeout")
+            return
+        end
+        BT.setEnabled(true, done_cb)
+    end)
+    return false
 end
 
 --=============================================================================

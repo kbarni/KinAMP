@@ -672,12 +672,69 @@ function KinAMPPlayer:showMenu()
             end),
         },
     }
+    buttons[#buttons + 1] = {
+        {
+            text = _("About"),
+            callback = act(function() self:showAbout() end),
+        },
+    }
 
     dialog = ButtonDialog:new{
         title = _("KinAMP"),
         title_align = "center",
         buttons = buttons,
     }
+    UIManager:show(dialog)
+end
+
+--- Who wrote this and which version it is: the plugin's counterpart to the GTK
+-- player's About box, with the same name, description, copyright and link.
+--
+-- Its "Check for updates" button is deliberately not carried over. Installing a
+-- release replaces the binaries and this plugin's own files, which the GTK
+-- player can only do by quitting and handing over to a helper script; doing it
+-- from inside KOReader would pull the running Lua out from under itself.
+function KinAMPPlayer:showAbout()
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local TextBoxWidget = require("ui/widget/textboxwidget")
+    local Config = require("kinamp_config")
+    local T = require("ffi/util").template
+
+    local dialog
+    dialog = ButtonDialog:new{
+        title = _("KinAMP"),
+        title_align = "center",
+        use_info_style = false, -- it is the name, so bold and in the title face
+        buttons = {
+            {
+                {
+                    text = _("Close"),
+                    callback = function() UIManager:close(dialog) end,
+                },
+            },
+        },
+    }
+
+    -- The rest goes under the title as added widgets: ButtonDialog draws them
+    -- between the title and the buttons, and gives us the width to lay them out
+    -- in. The line the GTK dialog has above the link comes from `separator`.
+    local width = dialog:getAddedWidgetAvailableWidth()
+    dialog:addWidget(TextBoxWidget:new{
+        text = T(_("Kindle media player\nVersion %1\n© 2026 kbarni"), Config.version),
+        face = Font:getFace("infofont"),
+        width = width,
+        alignment = "center",
+        separator = true,
+        not_focusable = true,
+    })
+    dialog:addWidget(TextBoxWidget:new{
+        text = Config.github_url,
+        face = Font:getFace("smallinfofont"),
+        width = width,
+        alignment = "center",
+        not_focusable = true,
+    })
+
     UIManager:show(dialog)
 end
 

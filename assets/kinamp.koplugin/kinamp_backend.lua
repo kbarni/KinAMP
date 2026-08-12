@@ -234,13 +234,63 @@ end
 -- The launcher script stops any previous instance first, so this is also how a
 -- stuck player gets recycled. It returns as soon as the shell has forked; the
 -- FIFO appears a moment later, hence Backend.wait_until_running().
+--
+-- The Bluetooth keepalive is armed first, and the daemon only started once that
+-- is done. It has to be this way round: btfd reads ensureBTconnection when the
+-- radio comes up and never again, so arming it means cycling the radio, and the
+-- moment before a player exists is the one moment that cycle interrupts no
+-- audio. This is what startkinamp.sh does for the GTK player (BTenable 0:1,
+-- then the player sets the flag and raises the radio); the KOReader launcher
+-- has no equivalent, so it happens here.
+--
+-- Nothing waits on it succeeding. A device with no btfd, or one whose radio will
+-- not come up, still gets its player - the worst case is the twenty minute
+-- disconnect that was there before any of this.
+local pending_cmd
+
 local function launch(args)
     local cmd = string.format("nohup %s %s > %s 2>&1 &",
         Backend.shell_escape(Config.bin_path),
         args or "",
         Backend.shell_escape(Config.log_file))
-    Backend.log("exec: " .. cmd)
-    os.execute(cmd)
+
+    -- Asking for something else while the radio is still cycling replaces what
+    -- is queued rather than starting a second player. There is no daemon yet to
+    -- hand the new arguments to over the FIFO, and two launches racing means the
+    -- launcher script killing the first player moments after it appeared. Last
+    -- request wins, which is also what the list that sent it has already said.
+    pending_cmd = cmd
+    if Backend.launch_pending then
+        Backend.log("launch already waiting on Bluetooth, superseded by: " .. cmd)
+        return
+    end
+
+    local UIManager = require("ui/uimanager")
+    local BT = require("kinamp_bt")
+    local waiting
+
+    Backend.launch_pending = true
+    local immediate = BT.armKeepalive(function(ok, err)
+        Backend.launch_pending = false
+        if waiting then UIManager:close(waiting) end
+        if not ok and err ~= "unavailable" then
+            Backend.log("BT: keepalive not armed (" .. tostring(err) .. "), starting anyway")
+        end
+        Backend.log("exec: " .. pending_cmd)
+        os.execute(pending_cmd)
+        pending_cmd = nil
+    end)
+
+    -- Only when the radio really is being cycled, which is the once-per-session
+    -- case: several seconds pass with nothing on screen moving, and pressing
+    -- play into silence reads as a player that has failed. When there is nothing
+    -- to arm the callback has already run above and this never shows.
+    if not immediate then
+        local InfoMessage = require("ui/widget/infomessage")
+        local _ = require("gettext")
+        waiting = InfoMessage:new{ text = _("Preparing Bluetooth…") }
+        UIManager:show(waiting)
+    end
 end
 
 --- Polls for the player's FIFO to appear, without blocking the UI thread.
@@ -252,6 +302,13 @@ function Backend.wait_until_running(callback)
     local function poll()
         if Backend.is_running() then
             callback(true)
+        elseif Backend.launch_pending then
+            -- The daemon has not been started yet: the Bluetooth keepalive is
+            -- being armed first and that cycles the radio, which takes longer
+            -- than a player takes to come up. Not this timeout's to spend, so
+            -- it only starts running once the process is actually on its way.
+            deadline = os.time() + Config.startup_timeout
+            UIManager:scheduleIn(0.25, poll)
         elseif os.time() >= deadline then
             Backend.log("player did not start within " .. Config.startup_timeout .. "s")
             callback(false)
