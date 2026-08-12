@@ -37,6 +37,8 @@ else()
 endif()
 
 # liblipc only exists on the Kindle; without it the GTK player cannot be built.
+# KinAMP-minimal only needs it for the Bluetooth keepalive and still builds
+# without it, so there it is optional rather than a precondition.
 find_library(LIPC_LIBRARY NAMES lipc)
 
 # --- Target ABI guard ---
@@ -133,6 +135,13 @@ target_link_libraries(KinAMP-minimal PRIVATE
     dl
     rt
 )
+
+if(LIPC_LIBRARY)
+    target_compile_definitions(KinAMP-minimal PRIVATE KINAMP_HAVE_LIPC=1)
+    target_link_libraries(KinAMP-minimal PRIVATE ${LIPC_LIBRARY})
+else()
+    message(STATUS "KinAMP: liblipc not found, KinAMP-minimal built without the Bluetooth keepalive")
+endif()
 
 kinamp_check_abi(KinAMP-minimal)
 

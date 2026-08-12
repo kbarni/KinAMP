@@ -17,6 +17,10 @@
 
 #include "music_backend.h"
 
+#ifdef KINAMP_HAVE_LIPC
+#include "openlipc/openlipc.h"
+#endif
+
 // Reuse the strategy enum
 enum PlaybackStrategy {
     NORMAL,
@@ -82,6 +86,80 @@ std::string get_runtime_path(const char* filename) {
 
 static void write_status(CliState* state);
 static void play_index(CliState* state, int index);
+
+// --- Bluetooth keepalive ---
+// The Kindle drops an idle Bluetooth audio device after 20 minutes.
+// com.lab126.btfd's ensureBTconnection flag inhibits that. The GTK player raises
+// it at startup and lowers it in quit_app(), but on_background_clicked() hands
+// playback over to us with the flag still raised and nothing left running that
+// would ever lower it again - so the device held the link alive long after the
+// music stopped. We therefore own the flag outright for our own lifetime.
+//
+// Deliberately scoped to the process, not to the track: raised lazily on the
+// first thing we play and held until we exit, never lowered in between. Under
+// the KOReader plugin, where a --daemon instance spans the whole session, that
+// is one write per session rather than one per track.
+//
+// Note what is NOT here: any write to BTenable. The stock keepalive sequence
+// cycles the radio (BTenable 0:1 -> flag -> 1:1), which disconnects the
+// headphones for several seconds and makes most devices chime on reconnect.
+// startkinamp.sh and the GTK player already do that cycle once at GUI launch;
+// repeating it per track would be audible every time. We only ever write the
+// flag, which disturbs nothing. The open question (see
+// KOREADER-BT-ANALYSIS-AND-PLAN.md 2.6) is whether btfd latches the flag when
+// it is written live, or only reads it at radio-init - if the latter, the
+// keepalive will not engage on the KOReader path, where nothing cycles the radio.
+//
+// liblipc only exists on the Kindle; on the desktop host these are no-ops.
+#ifdef KINAMP_HAVE_LIPC
+
+#define BTFD_SERVICE      "com.lab126.btfd"
+#define BT_KEEPALIVE_PROP "ensureBTconnection"
+
+static LIPC* lipc_instance = NULL;
+static bool bt_keepalive_held = false;
+
+static void acquire_bt_keepalive() {
+    if (bt_keepalive_held) return;
+
+    if (lipc_instance == NULL) {
+        // No service name: we only write another service's property, so there is
+        // nothing to register on the bus. That keeps us clear of KOReader's own
+        // lipc handles and of a second instance of ourselves.
+        lipc_instance = LipcOpenNoName();
+        if (lipc_instance == NULL) {
+            g_printerr("Warning: could not open LIPC, Bluetooth keepalive unavailable.\n");
+            return;
+        }
+    }
+
+    LIPCcode code = LipcSetIntProperty(lipc_instance, BTFD_SERVICE, BT_KEEPALIVE_PROP, 1);
+    if (code != LIPC_OK) {
+        // Left unheld, so the next track retries. Worth reporting: silently
+        // losing the keepalive looks like a firmware bug 20 minutes later.
+        g_printerr("Warning: could not set %s (lipc code %d).\n", BT_KEEPALIVE_PROP, (int)code);
+        return;
+    }
+    bt_keepalive_held = true;
+    g_print("Bluetooth keepalive on.\n");
+}
+
+static void release_bt_keepalive() {
+    if (lipc_instance == NULL) return;
+    if (bt_keepalive_held) {
+        LipcSetIntProperty(lipc_instance, BTFD_SERVICE, BT_KEEPALIVE_PROP, 0);
+        bt_keepalive_held = false;
+    }
+    LipcClose(lipc_instance);
+    lipc_instance = NULL;
+}
+
+#else
+
+static void acquire_bt_keepalive() {}
+static void release_bt_keepalive() {}
+
+#endif
 
 // --- Helper: Load Playlist ---
 // Decides whether an m3u line names a track, and cleans it up in place.
@@ -320,6 +398,10 @@ static void play_index(CliState* state, int index) {
 
     state->current_index = index;
     state->stopped = false;
+
+    // Every fresh start funnels through here (seeks and radio reconnects go
+    // straight to the backend, and by then we already hold it).
+    acquire_bt_keepalive();
 
     if (state->is_radio_mode) {
         const std::string& url = state->radio_urls[index];
@@ -646,6 +728,7 @@ static void teardown_control_channel(CliState* state) {
         state->status_timer_id = 0;
     }
     cancel_reconnect(state);
+    release_bt_keepalive();
 
     unlink(get_runtime_path(CMD_FIFO_NAME).c_str());
     unlink(get_runtime_path(STATUS_FILE_NAME).c_str());
