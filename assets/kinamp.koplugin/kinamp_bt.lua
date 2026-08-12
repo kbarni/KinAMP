@@ -1,59 +1,56 @@
---[[--
-Bluetooth control through com.lab126.btfd.
-
-The Kindle's Bluetooth daemon is reachable over lipc, and KOReader already
-ships the binding that can talk to it: libopenlipclua, the same one
-frontend/device/kindle/device.lua uses for the whole Wi-Fi stack. Its handles
-read and write scalars *and* read hasharray properties, so a single
-open_no_name() handle covers everything here - there is no service name to
-register, and so nothing to collide with KOReader's own lipc clients or with a
-second instance of ourselves. KinAMP-minimal opens its handle the same way
-(LipcOpenNoName in cli_player.cpp).
-
-Nothing in this file draws anything. Every operation that has to wait on the
-radio takes a callback and polls on a UIManager timer: BTenable returns
-immediately and the radio needs a second or two to follow, and a blocking wait
-would stop KOReader's event loop dead.
-
-btfd's properties are undocumented (see KOREADER-BT-ANALYSIS-AND-PLAN.md).
-These are the semantics verified on-device:
-
-  BTenable            "1:1" / "0:1"   turn the radio on / off
-  BTstate             1 / 0           radio up / down
-  ensureBTconnection  1 / 0           inhibit the 20 minute idle disconnect
-  ListPaired          hasharray       paired devices
-  ListConnected       hasharray       of those, whichever is connected now
-  BTconnectedDevName  string          its name
-  Connect / Disconnect  MAC           act on one device
-
-The hash key names inside ListPaired are *not* known, and differ between
-firmware versions as far as anyone can tell. They are therefore discovered at
-read time rather than hardcoded - see normalise() - and the raw shape is logged
-once per property so it can be read out of kinamp.log if the guesswork ever
-misses.
-
-The one thing to know about ensureBTconnection is that btfd only reads it when
-the radio initialises. Writing it to a radio that is already up sets a value
-nothing will ever look at again - which is why the stock sequence puts a radio
-cycle around the write, startkinamp.sh taking the radio down and
-music_player.cpp setting the flag and bringing it back up. Everything here that
-raises the flag therefore raises it with the radio down. See armKeepalive().
-
-On ownership of the flag: KinAMP-minimal raises it for its own lifetime whenever
-it plays something (cli_player.cpp), and it is not our place to lower it under a
-daemon that is still playing. We only ever move it as part of a radio transition
-- one the user asked for, or the one a starting daemon needs - where the radio
-is going away regardless.
---]]
+-- Bluetooth control through com.lab126.btfd.
+--
+-- The Kindle's Bluetooth daemon is reachable over lipc, and KOReader already
+-- ships the binding for it: libopenlipclua, the same one
+-- frontend/device/kindle/device.lua uses for the whole Wi-Fi stack. Its handles
+-- read and write scalars *and* read hasharray properties, so one
+-- open_no_name() handle covers everything here - no service name to register,
+-- so nothing to collide with KOReader's own lipc clients or with a second
+-- instance of ourselves. KinAMP-minimal opens its handle the same way
+-- (LipcOpenNoName in cli_player.cpp).
+--
+-- Nothing in this file draws anything. Every operation that waits on the radio
+-- takes a callback and polls on a UIManager timer: BTenable returns immediately
+-- and the radio needs a second or two to follow, and a blocking wait would stop
+-- KOReader's event loop dead.
+--
+-- btfd's properties are undocumented (see KOREADER-BT-ANALYSIS-AND-PLAN.md).
+-- Semantics verified on-device:
+--
+--   BTenable            "1:1" / "0:1"   turn the radio on / off
+--   BTstate             1 / 0           radio up / down
+--   ensureBTconnection  1 / 0           inhibit the 20 minute idle disconnect
+--   ListPaired          hasharray       paired devices
+--   ListConnected       hasharray       of those, whichever is connected now
+--   BTconnectedDevName  string          its name
+--   Connect / Disconnect  MAC           act on one device
+--
+-- The hash key names inside ListPaired are *not* known and differ between
+-- firmware versions as far as anyone can tell, so they're discovered at read
+-- time instead of hardcoded (see normalise()). The raw shape is logged once per
+-- property, so it can be read out of kinamp.log if the guesswork ever misses.
+--
+-- The thing to know about ensureBTconnection is that btfd only reads it when
+-- the radio initialises. Writing it to a radio that's already up sets a value
+-- nothing will look at again, which is why the stock sequence puts a radio
+-- cycle around the write: startkinamp.sh takes the radio down, then
+-- music_player.cpp sets the flag and brings it back up. Everything here that
+-- raises the flag raises it with the radio down. See armKeepalive().
+--
+-- We don't own the flag: KinAMP-minimal raises it for its own lifetime whenever
+-- it plays something (cli_player.cpp), and it's not our place to lower it under
+-- a daemon that's still playing. We only move it as part of a radio transition,
+-- either one the user asked for or the one a starting daemon needs, where the
+-- radio is going away regardless.
 
 local UIManager = require("ui/uimanager")
 local Backend = require("kinamp_backend")
 
 local BTFD = "com.lab126.btfd"
 
--- Radio transitions: how often to look, and when to give up. Turning the radio
--- on takes a couple of seconds on a good day; the timeout is generous because
--- the alternative to waiting is telling the user it failed when it had not.
+-- Radio transitions. Turning the radio on takes a couple of seconds on a good
+-- day; the timeout is generous because the alternative to waiting is telling
+-- the user it failed when it hadn't.
 local STATE_POLL = 0.5
 local STATE_TIMEOUT = 12
 
@@ -64,29 +61,26 @@ local CONNECT_TIMEOUT = 15
 
 local BT = {
     -- Set while a radio transition is in flight, so a second tap on the
-    -- checkbox cannot start a competing sequence.
+    -- checkbox can't start a competing sequence.
     busy = false,
 }
 
 -- True once ensureBTconnection has been written with the radio down *and* the
 -- radio has come back up on top of it, which is the only way btfd takes it.
--- Nothing can read the flag back - it is write-only - so this is the only record
--- there is, and it is deliberately per-session: a radio that went down and came
--- back up without us is one we have to assume dropped the flag.
+-- The flag is write-only, so this is the only record there is, and it's per
+-- session on purpose: a radio that went down and came back up without us is one
+-- we have to assume dropped the flag.
 local keepalive_armed = false
 
---=============================================================================
 -- The lipc handle
---=============================================================================
 
 local handle
 local handle_tried = false
 
---- The handle, opened on first use and held for the plugin's lifetime.
--- Held rather than opened per call because the device dialog refreshes, and
--- because this module stays loaded across the plugin teardown that a
--- file manager <-> reader switch causes.
--- @return handle, or nil off-device and on anything without libopenlipclua
+-- Opened on first use and held for the plugin's lifetime, rather than opened
+-- per call: the device dialog refreshes, and this module stays loaded across
+-- the plugin teardown that a file manager <-> reader switch causes. Returns nil
+-- off-device and on anything without libopenlipclua.
 local function get_handle()
     if handle then return handle end
     if handle_tried then return nil end
@@ -109,23 +103,19 @@ local function get_handle()
     return handle
 end
 
---- Drops the handle. The properties we set are btfd's and outlive it.
+-- Drops the handle. The properties we set are btfd's and outlive it.
 function BT.close()
     if not handle then return end
     pcall(handle.close, handle)
     handle = nil
-    -- Deliberately not clearing handle_tried: if opening worked once it will
-    -- work again, and if it never did there is no point retrying on the way out.
+    -- handle_tried stays set: if opening worked once it will work again, and if
+    -- it never did there's no point retrying on the way out.
 end
 
---=============================================================================
--- Property access
---
--- The binding raises on a lipc error rather than returning a code, so every
--- call is wrapped: a property that btfd does not have, or does not have on this
--- firmware, must degrade to "unknown" and never take KOReader down from a
--- button callback or a poll timer.
---=============================================================================
+-- Property access. The binding raises on a lipc error rather than returning a
+-- code, so every call is wrapped: a property btfd doesn't have, or doesn't have
+-- on this firmware, has to degrade to "unknown" and never take KOReader down
+-- from a button callback or a poll timer.
 
 local function get_int(prop)
     local h = get_handle()
@@ -169,12 +159,10 @@ local function set_str(prop, value)
     return ok
 end
 
---=============================================================================
 -- Device lists
---=============================================================================
 
--- Anywhere inside a value, not anchored: some firmwares hand back
--- "AA:BB:CC:DD:EE:FF" on its own, others wrap it in something longer.
+-- Not anchored: some firmwares hand back "AA:BB:CC:DD:EE:FF" on its own, others
+-- wrap it in something longer.
 local MAC_PATTERN = "%x%x:%x%x:%x%x:%x%x:%x%x:%x%x"
 
 -- Tried in order before falling back to scanning every value. These are
@@ -183,10 +171,9 @@ local MAC_KEYS = { "mac", "address", "addr", "bdaddr", "bd_addr", "btaddr", "dev
 local NAME_KEYS = { "name", "devname", "dev_name", "device_name", "alias",
                     "friendly_name", "displayName", "title" }
 
---- Reads a hasharray property.
--- Both hasharrays are destroyed on every path, error paths included: they are
--- C allocations that nothing else will ever come back for.
--- @return list of key/value tables, or nil if the property could not be read
+-- Reads a hasharray property into a list of key/value tables, or nil if it
+-- couldn't be read. Both hasharrays are destroyed on every path including the
+-- error ones: they're C allocations nothing else will come back for.
 local function read_list(prop)
     local h = get_handle()
     if not h then return nil end
@@ -197,7 +184,7 @@ local function read_list(prop)
         return nil
     end
 
-    -- An empty hasharray goes in because we are only reading.
+    -- An empty hasharray goes in because we're only reading.
     local got, ha_out = pcall(h.access_hash_property, h, BTFD, prop, ha_in)
     if not got or not ha_out then
         Backend.log("BT: reading " .. prop .. " failed: " .. tostring(ha_out))
@@ -206,7 +193,7 @@ local function read_list(prop)
     end
 
     local parsed, entries = pcall(ha_out.to_table, ha_out)
-    -- Guarded against the binding handing back the very hasharray we passed in,
+    -- Guard against the binding handing back the very hasharray we passed in,
     -- which would make this a double free.
     if ha_out ~= ha_in then pcall(ha_out.destroy, ha_out) end
     pcall(ha_in.destroy, ha_in)
@@ -239,7 +226,7 @@ local function log_shape(prop, entries)
     end
 end
 
---- Pulls a MAC and a display name out of one hash, whatever it calls them.
+-- Pulls a MAC and a display name out of one hash, whatever it calls them.
 local function normalise(entry)
     if type(entry) ~= "table" then return nil end
 
@@ -271,8 +258,8 @@ local function normalise(entry)
         end
     end
     if not name then
-        -- Longest string that is not the address: a device name is the only
-        -- free text in these records, and the only long one.
+        -- Longest string that isn't the address: a device name is the only free
+        -- text in these records, and the only long one.
         for _, value in pairs(entry) do
             if type(value) == "string" and value ~= "" and not value:match(MAC_PATTERN) then
                 if not name or #value > #name then name = value end
@@ -296,21 +283,20 @@ local function device_list(prop)
     return devices
 end
 
---- Paired devices, whether or not they are in range.
+-- Paired devices, whether or not they're in range.
 function BT.getPaired() return device_list("ListPaired") end
 
---- Whichever paired devices are connected right now (usually one, often none).
+-- Whichever paired devices are connected right now (usually one, often none).
 function BT.getConnected() return device_list("ListConnected") end
 
---- The connected device's name, or nil. Cheaper than getConnected() and works
--- even if the hash key guessing above ever misses.
+-- Cheaper than getConnected(), and works even if the key guessing above misses.
 function BT.getConnectedName()
     local name = get_str("BTconnectedDevName")
     if name == "" then return nil end
     return name
 end
 
---- Set of connected MACs, lowercased, for marking up a list of paired devices.
+-- Connected MACs, lowercased, for marking up a list of paired devices.
 function BT.getConnectedSet()
     local connected = {}
     for _, device in ipairs(BT.getConnected() or {}) do
@@ -319,46 +305,43 @@ function BT.getConnectedSet()
     return connected
 end
 
---=============================================================================
 -- Radio state
---=============================================================================
 
---- BTstate: 1 with the radio up, 0 with it down (verified on-device).
+-- 1 with the radio up, 0 with it down (verified on-device).
 function BT.getState() return get_int("BTstate") end
 
---- @return true/false, or nil when btfd will not say
+-- true/false, or nil when btfd won't say.
 function BT.isOn()
     local state = BT.getState()
     if state == nil then return nil end
     return state ~= 0
 end
 
---- True when there is a btfd on this device that answers us.
--- False on the desktop, and on anything whose Bluetooth is not btfd's (the
--- 11th generation devices drive libace_bt instead) - which is what keeps the
--- Bluetooth entries out of the menu there rather than showing dead ones.
+-- True when there's a btfd on this device that answers us. False on the desktop
+-- and on anything whose Bluetooth isn't btfd's (the 11th generation devices
+-- drive libace_bt instead), which is what keeps the Bluetooth entries out of
+-- the menu there rather than showing dead ones.
 function BT.available()
     if not get_handle() then return false end
     return BT.getState() ~= nil
 end
 
---- The 20 minute idle disconnect inhibitor.
--- Documented as a string property but the working stock sequence sets it with
--- lipc-set-prop -i, and so does the GTK player; int first, string as a fallback
--- in case a firmware ever disagrees.
+-- The 20 minute idle disconnect inhibitor. Documented as a string property, but
+-- the working stock sequence sets it with lipc-set-prop -i and so does the GTK
+-- player; int first, string as a fallback in case a firmware disagrees.
 function BT.setEnsure(on)
     local value = on and 1 or 0
     if set_int("ensureBTconnection", value) then return true end
     return set_str("ensureBTconnection", tostring(value))
 end
 
---- The radio itself. The second field of the value is undocumented; the stock
+-- The radio itself. The second field of the value is undocumented; the stock
 -- interface always sends 1 and so do we.
 function BT.setRadio(on)
     return set_str("BTenable", on and "1:1" or "0:1")
 end
 
---- Polls BTstate until it reaches `target`, or gives up.
+-- Polls BTstate until it reaches `target`, or gives up.
 local function await_state(target, done_cb)
     local deadline = os.time() + STATE_TIMEOUT
     local function poll()
@@ -374,16 +357,14 @@ local function await_state(target, done_cb)
     UIManager:scheduleIn(STATE_POLL, poll)
 end
 
---- Turns the radio on or off, keepalive flag and all.
+-- Turns the radio on or off, keepalive flag and all. done_cb gets (true) or
+-- (false, reason).
 --
--- The flag is written first, while the radio is still down, because that is the
--- only point at which btfd will take it. Turning the radio on is therefore the
--- one moment the keepalive can be armed for free: the radio is coming up
--- anyway, so there is no cycle and nothing audible. Arming it at any other time
--- costs a cycle - see armKeepalive().
---
--- @param on true to bring the radio up
--- @param done_cb called with (true) or (false, reason)
+-- The flag is written first, while the radio is still down, because that's the
+-- only point btfd will take it. Turning the radio on is therefore the one
+-- moment the keepalive can be armed for free: the radio is coming up anyway, so
+-- there's no cycle and nothing audible. Arming it at any other time costs a
+-- cycle - see armKeepalive().
 function BT.setEnabled(on, done_cb)
     done_cb = done_cb or function() end
 
@@ -394,8 +375,8 @@ function BT.setEnabled(on, done_cb)
     local state = BT.getState()
     if state == nil then return done_cb(false, "unavailable") end
     if state == target then
-        -- Already there. The write still goes out - it costs nothing, and it
-        -- lowers a flag stranded by a killed player - but it cannot arm
+        -- Already there. The write still goes out - it costs nothing and it
+        -- lowers a flag stranded by a killed player - but it can't arm
         -- anything: btfd is past the point where it would read it.
         BT.setEnsure(on)
         if not on then keepalive_armed = false end
@@ -413,12 +394,12 @@ function BT.setEnabled(on, done_cb)
         BT.busy = false
         if ok then
             -- The flag went down before the radio did and up before it came
-            -- back, so this transition is exactly the one btfd reads it on.
+            -- back, so this transition is the one btfd reads it on.
             keepalive_armed = on
         end
         if ok and on then
             -- btfd reconnects the last device by itself most of the time; this
-            -- is for when it does not, and costs nothing when it already has.
+            -- is for when it doesn't, and costs nothing when it already has.
             local last = BT.getLastDevice()
             if last and last.mac and not BT.getConnectedName() then
                 BT.connect(last.mac)
@@ -428,27 +409,25 @@ function BT.setEnabled(on, done_cb)
     end)
 end
 
---- Makes sure the keepalive is one btfd has actually taken, cycling the radio
--- if that is what it costs.
+-- Makes sure the keepalive is one btfd has actually taken, cycling the radio if
+-- that's what it costs. Returns true if it finished synchronously, false if a
+-- cycle is in flight; done_cb gets (true) or (false, reason), always.
 --
--- This is the whole stock startup sequence, and the reason it exists: the flag
+-- This is the whole stock startup sequence and the reason it exists: the flag
 -- only takes at radio-init, so a player that starts against an already-running
 -- radio gets no keepalive at all and loses the device twenty minutes later.
 -- startkinamp.sh solves it by taking the radio down (BTenable 0:1) before the
--- GTK player comes up and sets the flag and raises the radio again; the KOReader
--- path has no such script, so it is done here instead - with the script's
--- sleep 1 replaced by waiting for BTstate to actually reach 0.
+-- GTK player comes up and sets the flag and raises the radio again. The KOReader
+-- path has no such script, so it's done here, with the script's sleep 1 replaced
+-- by waiting for BTstate to actually reach 0.
 --
--- Called as a daemon is starting, which is where the cycle costs least: the link
--- goes for several seconds, and there is no audio yet to cut into. At most once
--- per session, because after the first one the flag is already latched.
+-- Called as a daemon is starting, which is where the cycle costs least: the
+-- link goes for several seconds and there's no audio yet to cut into. At most
+-- once per session, since after the first the flag is latched.
 --
--- Like the GTK player, this ends with the radio *on* even if it started off -
+-- Like the GTK player, this ends with the radio *on* even if it started off:
 -- Bluetooth is the only way sound leaves the device, so a player starting
 -- against a dead radio would just be silent.
---
--- @param done_cb called with (true), or (false, reason); always called
--- @return true if it finished synchronously, false if a cycle is in flight
 function BT.armKeepalive(done_cb)
     done_cb = done_cb or function() end
 
@@ -459,15 +438,15 @@ function BT.armKeepalive(done_cb)
     if BT.busy then done_cb(false, "busy") return true end
 
     if state ~= 0 and keepalive_armed then
-        -- Latched already, and the radio has not been down since. Cycling again
+        -- Latched already and the radio hasn't been down since. Cycling again
         -- would drop the link for nothing.
         done_cb(true)
         return true
     end
 
     if state == 0 then
-        -- Down already, which is exactly the state the flag wants writing in:
-        -- no cycle needed, just the second half of the sequence.
+        -- Down already, which is the state the flag wants writing in: no cycle
+        -- needed, just the second half of the sequence.
         BT.setEnabled(true, done_cb)
         return false
     end
@@ -484,7 +463,7 @@ function BT.armKeepalive(done_cb)
         BT.busy = false
         if not ok then
             -- Leave the radio to btfd rather than trying to undo half a cycle:
-            -- a radio that will not go down is one we understand too little of.
+            -- a radio that won't go down is one we understand too little of.
             done_cb(false, "timeout")
             return
         end
@@ -493,17 +472,15 @@ function BT.armKeepalive(done_cb)
     return false
 end
 
---=============================================================================
 -- Connecting
---=============================================================================
 
---- Asks btfd to connect a paired device.
+-- Asks btfd to connect a paired device. done_cb gets (true, name) or
+-- (false, reason).
 --
--- The write succeeds whether or not the device is switched on and in range -
--- it is a request, not a result - so the outcome has to be read back off
+-- The write succeeds whether or not the device is switched on and in range - it
+-- is a request, not a result - so the outcome has to be read back off
 -- ListConnected. Without a callback this is fire and forget, which is what the
 -- reconnect in setEnabled() wants.
--- @param done_cb called with (true, name) or (false, reason)
 function BT.connect(mac, done_cb)
     if not mac then
         if done_cb then done_cb(false, "no address") end
@@ -530,8 +507,7 @@ function BT.connect(mac, done_cb)
     UIManager:scheduleIn(CONNECT_POLL, poll)
 end
 
---- Drops a connected device. Disconnecting is prompt, so this waits far less
--- patiently than connecting does.
+-- Disconnecting is prompt, so this waits far less patiently than connecting.
 function BT.disconnect(mac, done_cb)
     if not mac then
         if done_cb then done_cb(false, "no address") end
@@ -557,13 +533,9 @@ function BT.disconnect(mac, done_cb)
     UIManager:scheduleIn(STATE_POLL, poll)
 end
 
---=============================================================================
--- The last device we were on
---
--- Kept in KOReader's settings rather than in .kinamp.conf: that file is shared
--- with the two C++ players, which parse it as integer keys only, and a MAC is
--- neither integer nor any of their business.
---=============================================================================
+-- Last device we were on. Kept in KOReader's settings rather than .kinamp.conf,
+-- which is shared with the two C++ players: they parse it as integer keys only,
+-- and a MAC is neither integer nor any of their business.
 
 function BT.getLastDevice()
     if not G_reader_settings then return nil end

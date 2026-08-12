@@ -20,8 +20,8 @@
 #include "tags.h"
 #include "icons.h"
 
-// KINAMP_VERSION comes from the project() version in CMakeLists.txt. Guessing a
-// fallback here would make the update check offer bogus updates, so require it.
+// KINAMP_VERSION comes from project() in CMakeLists.txt. No fallback: a guessed
+// version makes the update check offer bogus updates.
 #ifndef KINAMP_VERSION
 #error "KINAMP_VERSION is not defined - build with CMake."
 #endif
@@ -41,9 +41,9 @@ enum SleepMode {
     SLEEP_END_OF_PLAYLIST
 };
 
-// Playlist model columns. The path stays in column 0: the playlist is saved,
-// reloaded and played straight out of the model, and all of that keeps working
-// unchanged now that a separate column holds what the user sees.
+// Playlist model columns. The path stays in column 0 - saving, reloading and
+// playing all read the model directly, and keep working now that a separate
+// column holds what the user sees.
 enum {
     PLAYLIST_COL_PATH = 0,
     PLAYLIST_COL_DISPLAY,
@@ -98,18 +98,17 @@ struct AppData {
 // Defined below save_state(), but needed by the sleep timer in update_progress_cb().
 void quit_app(AppData *app_data);
 
-// Where the "Add file" and "Add folder" dialogs start browsing. Without this
-// they open in the working directory, which is the install directory - never
-// where the music is. KINAMP_MUSIC_FOLDER overrides the default; the KOReader
-// plugin honours the same variable.
+// Where the "Add file" and "Add folder" dialogs start browsing. Otherwise they
+// open in the working directory, i.e. the install dir, never where the music is.
+// KINAMP_MUSIC_FOLDER overrides it; the KOReader plugin reads the same variable.
 static const char *music_folder() {
     const char *env = g_getenv("KINAMP_MUSIC_FOLDER");
     if (env && *env) return env;
     return "/mnt/us/music";
 }
 
-// Left alone if the folder does not exist, so GTK keeps its own default rather
-// than landing the user somewhere that cannot be listed.
+// Left alone if the folder doesn't exist, so GTK keeps its own default instead
+// of landing on something unlistable.
 static void set_start_folder(GtkFileChooser *chooser) {
     const char *folder = music_folder();
     if (g_file_test(folder, G_FILE_TEST_IS_DIR)) {
@@ -317,8 +316,8 @@ void on_eos_cb(void* user_data) {
 }
 
 
-// How a track reads once its tags are known. Empty when there is no title to
-// build on, which is the caller's cue to fall back to the file name.
+// How a track reads once its tags are known. Empty when there's no title to
+// build on - the caller's cue to fall back to the file name.
 static std::string format_track_label(const std::string &artist, const std::string &title) {
     if (title.empty()) return "";
     return artist.empty() ? title : artist + " - " + title;
@@ -331,16 +330,16 @@ static std::string file_name_of(const char *full_path) {
     return name;
 }
 
-// What to show in the now playing label: the tags when the file carries them,
-// otherwise the file name as before. The backend fills the meta_* fields in
-// play_file(), so this is only meaningful for the track currently loaded.
+// Now playing label: tags when the file carries them, otherwise the file name.
+// The backend fills meta_* in play_file(), so this only means anything for the
+// track currently loaded.
 static std::string now_playing_label(MusicBackend *backend, const char *full_path) {
     std::string label = format_track_label(backend->meta_artist, backend->meta_title);
     return label.empty() ? file_name_of(full_path) : label;
 }
 
-// Lengths on the playlist rows read M:SS, growing to H:MM:SS for the audiobook
-// chapters that run past the hour. An unknown length shows nothing at all.
+// Playlist row lengths read M:SS, or H:MM:SS for audiobook chapters that run
+// past the hour. Unknown length shows nothing.
 static std::string format_duration(int seconds) {
     if (seconds <= 0) return "";
 
@@ -355,10 +354,10 @@ static std::string format_duration(int seconds) {
     return buf;
 }
 
-// Reading tags means opening every file, which is slow on Kindle storage and
-// would stall the UI for seconds when a folder is added. So rows go in with
-// their file name, and the tags replace it from an idle handler a few rows at a
-// time. This runs on the main loop, so it needs no locking against the store.
+// Reading tags opens every file, which on Kindle storage stalls the UI for
+// seconds when a folder is added. So rows go in with their file name and an idle
+// handler swaps in the tags a few rows at a time. Runs on the main loop, so no
+// locking against the store.
 static const int TAG_SCAN_BATCH = 8;
 
 static gboolean scan_playlist_tags_cb(gpointer data) {
@@ -367,8 +366,8 @@ static gboolean scan_playlist_tags_cb(gpointer data) {
     GtkTreeIter iter;
     int scanned = 0;
 
-    // Rows already scanned cost nothing to skip, so they do not use up the
-    // batch: a scan re-queued after an append still reaches the new rows fast.
+    // Already-scanned rows are free to skip, so they don't use up the batch and
+    // a scan re-queued after an append reaches the new rows fast.
     while (scanned < TAG_SCAN_BATCH) {
         if (!gtk_tree_model_iter_nth_child(model, &iter, NULL, app_data->tag_scan_index)) {
             app_data->tag_scan_idle_id = 0;
@@ -382,9 +381,8 @@ static gboolean scan_playlist_tags_cb(gpointer data) {
                            PLAYLIST_COL_SCANNED, &done, -1);
 
         if (path != NULL && !done) {
-            // The return value only reports the text tags, and a file with none
-            // of those can still have had its length read, so both are taken
-            // from the struct.
+            // The return value only covers the text tags; a file with none can
+            // still have had its length read, so take both from the struct.
             AudioTags tags;
             read_audio_tags(path, &tags);
 
@@ -405,8 +403,8 @@ static gboolean scan_playlist_tags_cb(gpointer data) {
     return TRUE;
 }
 
-// Pass restart when rows may have gone away (a cleared or reloaded playlist);
-// a plain append only needs the handler woken up again.
+// Pass restart when rows may have gone away (cleared or reloaded playlist).
+// A plain append just needs the handler woken up again.
 static void queue_tag_scan(AppData *app_data, bool restart) {
     if (restart) app_data->tag_scan_index = 0;
     if (app_data->tag_scan_idle_id == 0) {
@@ -416,10 +414,9 @@ static void queue_tag_scan(AppData *app_data, bool restart) {
     }
 }
 
-// Decides whether an m3u line names a track, and cleans it up in place.
-// Playlists written elsewhere carry #EXTM3U/#EXTINF directives, which are not
-// paths, and often use CRLF line endings, whose trailing CR would otherwise
-// become part of the file name and make every entry unopenable.
+// True if the line names a track; trims it in place. #EXTM3U/#EXTINF directives
+// are not paths, and a CRLF line ending leaves a trailing CR that becomes part
+// of the file name and makes the entry unopenable.
 static bool m3u_entry(std::string *line) {
     while (!line->empty() && (*line->rbegin() == '\r' || *line->rbegin() == '\n')) {
         line->erase(line->size() - 1);
@@ -427,8 +424,8 @@ static bool m3u_entry(std::string *line) {
     return !line->empty() && (*line)[0] != '#';
 }
 
-// Adds a row showing the file name, to be replaced by the tags once the scan
-// reaches it. Every playlist insertion goes through here.
+// Adds a row showing the file name; the tag scan replaces it later. Every
+// playlist insertion goes through here.
 static void playlist_append(GtkListStore *store, const char *file_path) {
     std::string name = file_name_of(file_path);
 
@@ -440,8 +437,8 @@ static void playlist_append(GtkListStore *store, const char *file_path) {
                        PLAYLIST_COL_SCANNED, FALSE, -1);
 }
 
-// The two stores keep their display text in different columns, so the shared
-// view column is rebound whenever the model is swapped.
+// The two stores keep their display text in different columns, so rebind the
+// shared view column whenever the model is swapped.
 static void bind_list_column(AppData *app_data, int text_column, const char *title) {
     gtk_tree_view_column_clear_attributes(app_data->list_column, app_data->list_renderer);
     gtk_tree_view_column_add_attribute(app_data->list_column, app_data->list_renderer,
@@ -550,8 +547,8 @@ std::string get_config_path(const char* filename) {
     return std::string(filename);
 }
 
-// Width of the volume handle. Shared by the drawing and the hit testing so the
-// handle always sits under the point that was touched.
+// Width of the volume handle. Shared by the drawing and the hit testing, so the
+// handle sits under the point that was touched.
 static double volume_handle_width(double w, double h) {
     double handle_w = h * 0.30;
     if (handle_w > w * 0.25) handle_w = w * 0.25;
@@ -559,8 +556,8 @@ static double volume_handle_width(double w, double h) {
     return handle_w;
 }
 
-// Single entry point for changing the volume: clamps, snaps to the same 0.05
-// steps the GtkScale used, and only repaints when the value really moved.
+// One entry point for volume changes: clamps, snaps to the same 0.05 steps the
+// GtkScale used, repaints only when the value actually moved.
 void volume_apply(AppData *app_data, double volume) {
     if (volume < 0.0) volume = 0.0;
     if (volume > 1.0) volume = 1.0;
@@ -619,8 +616,8 @@ void save_state(AppData *app_data) {
     }
 }
 
-// Closes KinAMP the normal way: restores the device power/BT settings, saves the
-// state and leaves gtk_main() so the device is free to suspend again.
+// Normal exit: restore the device power/BT settings, save the state and leave
+// gtk_main() so the device can suspend again.
 void quit_app(AppData *app_data) {
     save_state(app_data);
     app_data->backend->stop();
@@ -639,8 +636,8 @@ static const char* config_value(const std::string &line, const char *key) {
     return line.c_str() + key_len;
 }
 
-// Reads a number the way save_state() wrote it. atof() would follow the current
-// locale and return 0 for "0.75" wherever the decimal separator is a comma.
+// Reads a number the way save_state() wrote it. atof() follows the current
+// locale and returns 0 for "0.75" where the decimal separator is a comma.
 static double parse_double(const char *text, double fallback) {
     std::istringstream stream(text);
     stream.imbue(std::locale::classic());
@@ -761,9 +758,9 @@ void set_label_font(GtkWidget *label, const char *font_desc_str) {
     pango_font_description_free(font_desc);
 }
 
-// Enlarges a label relative to whatever the theme uses, so the dialogs stay
-// readable in both resolutions without a hardcoded point size. Unlike markup,
-// the attribute survives a later gtk_label_set_text().
+// Enlarges a label relative to the theme font, so dialogs stay readable at both
+// resolutions without a hardcoded point size. Unlike markup, the attribute
+// survives a later gtk_label_set_text().
 void scale_label_font(GtkWidget *label, double scale) {
     PangoAttrList *attrs = pango_attr_list_new();
     pango_attr_list_insert(attrs, pango_attr_scale_new(scale));
@@ -771,16 +768,16 @@ void scale_label_font(GtkWidget *label, double scale) {
     pango_attr_list_unref(attrs);
 }
 
-// Everything music_backend can decode: miniaudio handles the first four, FAAD
-// the MP4 container ones. Keep this in sync with detect_format_helper() in
-// music_backend.cpp - it is the single list both the folder scan and the file
-// chooser below consult, so they can't drift apart.
+// Everything music_backend can decode: miniaudio takes the first four, FAAD the
+// MP4 container ones. Keep in sync with detect_format_helper() in
+// music_backend.cpp. Both the folder scan and the file chooser below read this
+// one list.
 static const char *SUPPORTED_EXTENSIONS[] = {
     ".mp3", ".flac", ".wav", ".ogg", ".m4a", ".m4b", ".mp4"
 };
 
-// Matched case-insensitively: files ripped elsewhere or copied off other devices
-// routinely arrive as .MP3 or .Flac, and those used to be silently skipped.
+// Case-insensitive: files ripped elsewhere routinely arrive as .MP3 or .Flac,
+// which used to be silently skipped.
 static bool has_supported_extension(const char *filename) {
     const char *ext = strrchr(filename, '.');
     if (ext == NULL) {
@@ -795,7 +792,7 @@ static bool has_supported_extension(const char *filename) {
 }
 
 // GTK2's pattern filters are case-sensitive glob, so a custom matcher is the
-// only way to get .MP3 to show up alongside .mp3 in the file chooser.
+// only way to get .MP3 listed alongside .mp3 in the file chooser.
 static gboolean music_file_filter(const GtkFileFilterInfo *info, gpointer data) {
     (void)data;
     return (info->filename != NULL && has_supported_extension(info->filename)) ? TRUE : FALSE;
@@ -865,17 +862,16 @@ void play_selected_song(AppData* app_data) {
     }
 }
 
-// Double-clicking a row (or pressing Enter on it) plays it. GTK selects the row
-// before emitting this, but the cursor is set explicitly so the handler does not
-// depend on that ordering. Works in radio mode too, since play_selected_song()
-// reads whichever model is currently bound.
+// Double-click (or Enter) on a row plays it. GTK selects the row before emitting
+// this, but set the cursor explicitly rather than rely on that ordering. Works
+// in radio mode too - play_selected_song() reads whichever model is bound.
 static void on_playlist_row_activated(GtkTreeView *tree_view, GtkTreePath *path,
                                       GtkTreeViewColumn *column, gpointer data) {
     (void)column;
     AppData *app_data = (AppData*)data;
 
-    // Same guard as the play/pause button: starting a track while the backend is
-    // tearing the previous one down races with it.
+    // Same guard as the play/pause button: starting a track while the backend
+    // tears the previous one down races with it.
     if (app_data->backend->is_shutting_down()) {
         g_print("UI: Backend is stopping, ignoring row activation.\n");
         return;
@@ -1010,10 +1006,10 @@ void on_displayUpdate_clicked(GtkWidget *widget, gpointer data) {
 }
 
 
-// Draws the volume control as a wedge that fills up to the handle, for a value
-// between 0 (empty) and 1 (full). Everything is derived from the allocation, so
-// the drawing cannot disagree with the coordinate space it is clipped to. Kept
-// separate from the expose handler so it can be rendered without a live widget.
+// The volume control: a wedge filling up to the handle, for a value between 0
+// and 1. Everything comes from the allocation, so the drawing can't disagree
+// with the coordinate space it's clipped to. Separate from the expose handler
+// so it can be rendered without a live widget.
 static void draw_volume_wedge(cairo_t *cr, const GdkRectangle *alloc, double fraction) {
     double x = alloc->x;
     double y = alloc->y;
@@ -1083,10 +1079,10 @@ static void draw_volume_wedge(cairo_t *cr, const GdkRectangle *alloc, double fra
     cairo_stroke(cr);
 }
 
-// A GtkScale only accepts input inside its trough, a band the theme fixes at
-// about 18 pixels whatever the widget height, so a tall one is mostly dead to
-// the touchscreen. A drawing area owns its window: it gets events over its whole
-// area, and drawing is in plain widget-local coordinates.
+// A GtkScale only takes input inside its trough, a band the theme fixes at about
+// 18 pixels whatever the widget height, so a tall one is mostly dead to the
+// touchscreen. A drawing area owns its window: events over the whole area, and
+// drawing in plain widget-local coordinates.
 static gboolean on_volume_slider_expose(GtkWidget *widget, GdkEventExpose *event, gpointer data) {
     (void)event;
     AppData *app_data = (AppData*)data;
@@ -1346,9 +1342,9 @@ struct SleepDialogData {
     int minutes;
 };
 
-// GTK draws the radio indicator at 13 pixels by default, which is hard to make
-// out on an eink screen. GtkCheckButton exposes the size as a style property, so
-// a bigger one can be asked for by name instead of drawing the indicators by hand.
+// GTK draws the radio indicator at 13 pixels, which is hard to make out on eink.
+// GtkCheckButton exposes the size as a style property, so we can ask for a
+// bigger one by name instead of drawing the indicators by hand.
 static void apply_big_radio_style(bool is_hires) {
     static bool applied = false;
     if (applied) return;
@@ -1559,8 +1555,8 @@ static bool version_is_newer(const std::string &candidate, const std::string &cu
 }
 
 // Writes a helper script that downloads and unpacks the release once KinAMP is
-// gone, then restarts the player. It cannot be done in-process: the update
-// replaces both the running binary and the launcher script.
+// gone, then restarts the player. Can't be done in-process: the update replaces
+// both the running binary and the launcher script.
 static bool launch_updater(const std::string &url, const std::string &new_version) {
     const char *script_path = "/mnt/us/kinamp_update.sh";
 

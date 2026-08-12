@@ -7,10 +7,10 @@
 
 // Minimal Shoutcast/Icecast HTTP client.
 //
-// wget hides the response headers, so a stream opened through it can never
-// learn its icy-metaint. This connects directly instead, which also yields
-// content-type and lets redirects be followed. Plain http:// only - no TLS
-// library is linked, so https:// still needs the wget fallback.
+// wget hides the response headers, so a stream opened through it never learns
+// its icy-metaint. This connects directly, which also gets us content-type and
+// lets us follow redirects. Plain http:// only - no TLS library is linked, so
+// https:// still goes through the wget fallback.
 
 typedef void (*IcyTitleCallback)(const std::string& raw_title, void* user_data);
 
@@ -26,12 +26,12 @@ struct IcyStream {
 
 void icy_stream_init(IcyStream* s);
 
-// Connects and performs the GET, requesting metadata. Returns true on success,
-// leaving s->fd connected and positioned at the first audio byte.
+// Connects and does the GET, asking for metadata. On success s->fd is connected
+// and positioned at the first audio byte.
 bool icy_open(const std::string& url, IcyStream* s);
 
-// Reads exactly n audio bytes (fewer only at end of stream), transparently
-// consuming any interleaved metadata blocks. Returns bytes written, or -1.
+// Reads n audio bytes (fewer only at end of stream), eating any interleaved
+// metadata blocks on the way. Returns bytes written, or -1.
 ssize_t icy_read(IcyStream* s, void* dst, size_t n);
 
 void icy_close(IcyStream* s);

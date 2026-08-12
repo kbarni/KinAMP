@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <random>
 #include <fstream>
+#include <sstream>
+#include <locale>
 #include <unistd.h>
 #include <signal.h>
 #include <cstring>
@@ -29,15 +31,14 @@ enum PlaybackStrategy {
 };
 
 // Control channel: a FIFO we read newline-terminated commands from, and a status
-// file we rewrite whenever something changes. Clients that cannot open the FIFO
-// know no player is running.
+// file we rewrite on every change. A client that can't open the FIFO knows no
+// player is running.
 //
-// These do NOT live next to the config files. The install directory is on
-// /mnt/us, which is vfat: it cannot represent a FIFO at all, so mkfifo() there
-// fails with EPERM and the player ends up running with no way to be controlled.
-// Rewriting a status file once a second on that flash would be unkind too.
-// /tmp is a real filesystem on the device - music_backend.cpp already puts its
-// audio pipe there. KINAMP_RUNTIME_DIR overrides it.
+// NOT next to the config files: the install dir is on /mnt/us, which is vfat and
+// can't hold a FIFO at all (mkfifo gives EPERM), and rewriting a status file
+// once a second on that flash would be unkind anyway. /tmp is a real filesystem
+// on the device - music_backend.cpp already puts its audio pipe there.
+// KINAMP_RUNTIME_DIR overrides it.
 #define CMD_FIFO_NAME    "kinamp_cmd"
 #define STATUS_FILE_NAME "kinamp_status"
 #define COVER_FILE_STEM  "kinamp_cover"
@@ -49,9 +50,12 @@ struct CliState {
     std::vector<std::string> radio_names;
     int current_index;
     PlaybackStrategy strategy;
+    double volume;          // 0..1, as .kinamp.conf stores it
     GMainLoop* loop;
     bool explicit_playlist; // True if playlist was passed as arg
     bool is_radio_mode;
+    bool radio_from_list;   // radio_urls came from .kinamp_radio.txt, so
+                            // current_index means something outside this process
 
     // --- Control channel ---
     bool daemon_mode;        // stay alive when the playlist ends
@@ -88,34 +92,24 @@ static void write_status(CliState* state);
 static void play_index(CliState* state, int index);
 
 // --- Bluetooth keepalive ---
-// The Kindle drops an idle Bluetooth audio device after 20 minutes.
-// com.lab126.btfd's ensureBTconnection flag inhibits that. The GTK player raises
-// it at startup and lowers it in quit_app(), but on_background_clicked() hands
-// playback over to us with the flag still raised and nothing left running that
-// would ever lower it again - so the device held the link alive long after the
-// music stopped. We therefore own the flag outright for our own lifetime.
+// The Kindle drops an idle BT audio device after 20 minutes; btfd's
+// ensureBTconnection flag inhibits that. The GTK player raises it at startup and
+// lowers it in quit_app(), but on_background_clicked() hands playback to us with
+// the flag still raised and nothing left to lower it, so the link stayed alive
+// long after the music stopped. So we own the flag for our own lifetime: raised
+// on the first thing we play, held until we exit, never lowered in between.
 //
-// Deliberately scoped to the process, not to the track: raised lazily on the
-// first thing we play and held until we exit, never lowered in between. Under
-// the KOReader plugin, where a --daemon instance spans the whole session, that
-// is one write per session rather than one per track.
+// No write to BTenable here. The stock sequence cycles the radio
+// (BTenable 0:1 -> flag -> 1:1), which drops the headphones for several seconds
+// and makes most devices chime; per track that would be audible every time.
+// That means our write alone arms nothing - btfd reads the flag when the radio
+// comes up and never again - so it has to land in a gap somebody else opens, and
+// both launch paths open one before we exist (startkinamp.sh takes the radio
+// down ahead of the GTK player, the KOReader plugin cycles it in armKeepalive()).
+// Our write is for the other end: lowering the flag on exit, and raising it again
+// for any cycle that happens while we play.
 //
-// Note what is NOT here: any write to BTenable. The stock keepalive sequence
-// cycles the radio (BTenable 0:1 -> flag -> 1:1), which disconnects the
-// headphones for several seconds and makes most devices chime on reconnect;
-// repeating that per track would be audible every time. We only ever write the
-// flag, which disturbs nothing.
-//
-// That does mean this write alone arms nothing: btfd reads ensureBTconnection
-// when the radio comes up and never again, so it has to be raised into a gap
-// somebody else opens. Both launch paths open one before we exist -
-// startkinamp.sh takes the radio down ahead of the GTK player, and the KOReader
-// plugin cycles it in kinamp_bt.lua's armKeepalive() before starting us. What
-// our own write is for is the other end: lowering the flag on exit, so the next
-// radio init does not inherit a keepalive nobody asked for, and raising it again
-// for any cycle that happens while we are playing.
-//
-// liblipc only exists on the Kindle; on the desktop host these are no-ops.
+// liblipc only exists on the Kindle; on the desktop these are no-ops.
 #ifdef KINAMP_HAVE_LIPC
 
 #define BTFD_SERVICE      "com.lab126.btfd"
@@ -129,8 +123,8 @@ static void acquire_bt_keepalive() {
 
     if (lipc_instance == NULL) {
         // No service name: we only write another service's property, so there is
-        // nothing to register on the bus. That keeps us clear of KOReader's own
-        // lipc handles and of a second instance of ourselves.
+        // nothing to register on the bus, and nothing to collide with KOReader's
+        // own lipc handles or a second instance of ourselves.
         lipc_instance = LipcOpenNoName();
         if (lipc_instance == NULL) {
             g_printerr("Warning: could not open LIPC, Bluetooth keepalive unavailable.\n");
@@ -140,8 +134,8 @@ static void acquire_bt_keepalive() {
 
     LIPCcode code = LipcSetIntProperty(lipc_instance, BTFD_SERVICE, BT_KEEPALIVE_PROP, 1);
     if (code != LIPC_OK) {
-        // Left unheld, so the next track retries. Worth reporting: silently
-        // losing the keepalive looks like a firmware bug 20 minutes later.
+        // Left unheld so the next track retries. Report it - losing the
+        // keepalive silently looks like a firmware bug 20 minutes later.
         g_printerr("Warning: could not set %s (lipc code %d).\n", BT_KEEPALIVE_PROP, (int)code);
         return;
     }
@@ -167,11 +161,10 @@ static void release_bt_keepalive() {}
 #endif
 
 // --- Helper: Load Playlist ---
-// Decides whether an m3u line names a track, and cleans it up in place.
-// Playlists written elsewhere carry #EXTM3U/#EXTINF directives, which are not
-// paths, and often use CRLF line endings, whose trailing CR would otherwise
-// become part of the file name and make every entry unopenable.
-// (music_player.cpp has the same helper; the CLI player never got it.)
+// True if the line names a track; trims it in place. #EXTM3U/#EXTINF directives
+// are not paths, and a CRLF line ending leaves a trailing CR that becomes part
+// of the file name and makes the entry unopenable.
+// (Same helper as in music_player.cpp.)
 static bool m3u_entry(std::string* line) {
     while (!line->empty() && (*line->rbegin() == '\r' || *line->rbegin() == '\n')) {
         line->erase(line->size() - 1);
@@ -183,9 +176,9 @@ bool load_playlist(const std::string& filepath, std::vector<std::string>& playli
     std::ifstream infile(filepath.c_str());
     if (!infile.is_open()) return false;
 
-    // Relative entries in an m3u are relative to the playlist's own directory,
-    // not to our working directory (the install dir), so they have to be
-    // rebased or nothing in a playlist saved next to the music will open.
+    // Relative entries are relative to the playlist's own directory, not to our
+    // working directory (the install dir), so rebase them - otherwise a playlist
+    // saved next to the music opens nothing.
     std::string base;
     size_t slash = filepath.find_last_of('/');
     if (slash != std::string::npos) {
@@ -225,6 +218,17 @@ bool load_radio_stations(CliState* state) {
     return true;
 }
 
+// Reads a number the way the GTK player wrote it. atof() follows the current
+// locale and returns 0 for "0.75" where the decimal separator is a comma.
+// Same as parse_double() in music_player.cpp.
+static double parse_double(const std::string& text, double fallback) {
+    std::istringstream stream(text);
+    stream.imbue(std::locale::classic());
+    double value;
+    if (!(stream >> value)) return fallback;
+    return value;
+}
+
 // --- Helper: Load Default Config (State) ---
 void load_default_state(CliState* state) {
     std::string config_path = get_config_path(".kinamp.conf");
@@ -242,6 +246,12 @@ void load_default_state(CliState* state) {
             if (line.find("is_radio_mode=") == 0) {
                 state->is_radio_mode = (atoi(line.substr(14).c_str()) != 0);
             }
+            if (line.find("volume=") == 0) {
+                double vol = parse_double(line.substr(7), 1.0);
+                if (vol < 0.0) vol = 0.0;
+                if (vol > 1.0) vol = 1.0;
+                state->volume = vol;
+            }
         }
         conffile.close();
     }
@@ -249,9 +259,14 @@ void load_default_state(CliState* state) {
 
 // --- Helper: Persist current_index so the GTK player resumes where we stopped ---
 // The GUI writes .kinamp.conf on exit and startkinamp.sh hands playback over to
-// us; without this write-back the handover only works in one direction.
+// us; without this write-back the handover only works one way.
+//
+// A stream handed to us on the command line or over the FIFO is not in the
+// station list and has no index in it - we hold position 0 of a one-item list,
+// and writing that would point the file at the first station instead of what the
+// client actually picked (which it records itself).
 void save_current_index(CliState* state) {
-    if (state->is_radio_mode) return;
+    if (state->is_radio_mode && !state->radio_from_list) return;
 
     std::string config_path = get_config_path(".kinamp.conf");
     std::vector<std::string> lines;
@@ -332,8 +347,8 @@ static gboolean status_tick(gpointer data) {
     return TRUE;
 }
 
-// Only run the 1 Hz refresh while something is actually playing: a paused or
-// stopped player has nothing to report and this is a battery-powered device.
+// Only run the 1 Hz refresh while something is playing: a paused or stopped
+// player has nothing to report, and this is a battery-powered device.
 static void sync_status_timer(CliState* state) {
     bool want_timer = state->backend->is_playing && !state->backend->is_paused;
     if (want_timer && state->status_timer_id == 0) {
@@ -404,8 +419,8 @@ static void play_index(CliState* state, int index) {
     state->current_index = index;
     state->stopped = false;
 
-    // Every fresh start funnels through here (seeks and radio reconnects go
-    // straight to the backend, and by then we already hold it).
+    // Every fresh start comes through here. Seeks and radio reconnects go
+    // straight to the backend, but by then we already hold it.
     acquire_bt_keepalive();
 
     if (state->is_radio_mode) {
@@ -414,6 +429,7 @@ static void play_index(CliState* state, int index) {
                 state->radio_names[index].c_str(), url.c_str());
         state->backend->meta_title.clear();
         state->backend->play_file(url.c_str());
+        save_current_index(state); // no-op unless this is the station list
     } else {
         const std::string& file = state->playlist[index];
         g_print("Playing [%d/%zu]: %s\n", index + 1, total_items, file.c_str());
@@ -444,8 +460,7 @@ void play_next(CliState* state) {
                 next_index = state->current_index + 1;
             } else {
                 g_print("End of list reached.\n");
-                // A daemon stays available for the next command instead of
-                // exiting, which is what the KOReader plugin drives.
+                // A daemon waits for the next command instead of exiting.
                 if (state->daemon_mode) {
                     state->stopped = true;
                     sync_status_timer(state);
@@ -504,8 +519,8 @@ static gboolean radio_reconnect(gpointer data) {
 void on_eos_callback(void* user_data) {
     CliState* state = (CliState*)user_data;
     if (state->is_radio_mode) {
-        // Scheduled rather than a blocking sleep(5), so commands stay responsive
-        // while we wait to reconnect.
+        // Timer rather than sleep(5), so commands still get answered while we
+        // wait to reconnect.
         g_print("Radio stream ended. Reconnecting in 5 seconds...\n");
         if (state->reconnect_timer_id == 0) {
             state->reconnect_timer_id = g_timeout_add_seconds(5, radio_reconnect, state);
@@ -588,8 +603,8 @@ void handle_command(CliState* state, const std::string& raw) {
         cancel_reconnect(state);
         play_index(state, atoi(arg.c_str()));
     } else if (verb == "seek") {
-        // MusicBackend has no seek; restarting the file at an offset is the only
-        // mechanism available, and it is what the GTK player uses too.
+        // MusicBackend has no seek. Restarting the file at an offset is all we
+        // have, and it's what the GTK player does too.
         if (!state->is_radio_mode && state->current_index >= 0 &&
             state->current_index < (int)state->playlist.size()) {
             int seconds = atoi(arg.c_str());
@@ -609,15 +624,14 @@ void handle_command(CliState* state, const std::string& raw) {
         if (s >= NORMAL && s <= RANDOM) state->strategy = (PlaybackStrategy)s;
         write_status(state);
     } else if (verb == "load") {
-        // Stages the playlist without starting it, so a client can write
-        // "load <path>\nindex <n>" in one go and land directly on the track it
-        // wants instead of briefly playing the first one.
+        // Stages the playlist without starting it, so a client can send
+        // "load <path>\nindex <n>" in one go and land on the track it wants
+        // instead of briefly playing the first one.
         std::vector<std::string> loaded;
         if (!arg.empty() && load_playlist(arg, loaded) && !loaded.empty()) {
             cancel_reconnect(state);
             state->backend->stop();
-            // swap, not assign: taking ownership of the buffer avoids copying
-            // every path, and keeps this out of the allocator's growth path.
+            // swap, not assign: takes the buffer instead of copying every path.
             state->playlist.swap(loaded);
             state->is_radio_mode = false;
             state->current_index = -1;
@@ -635,6 +649,7 @@ void handle_command(CliState* state, const std::string& raw) {
             state->radio_names.clear();
             state->radio_urls.push_back(arg);
             state->radio_names.push_back("Custom Stream");
+            state->radio_from_list = false;
             state->current_index = -1;
             play_index(state, 0);
         }
@@ -679,14 +694,13 @@ static gboolean on_cmd_readable(GIOChannel* source, GIOCondition condition, gpoi
 static bool setup_command_fifo(CliState* state) {
     std::string path = get_runtime_path(CMD_FIFO_NAME);
 
-    // A stale FIFO from a killed instance is harmless, but a stale *regular file*
-    // of the same name would silently swallow every command, so always recreate.
+    // A stale FIFO from a killed instance is harmless, but a stale regular file
+    // of the same name would swallow every command, so always recreate.
     unlink(path.c_str());
     if (mkfifo(path.c_str(), 0666) == -1 && errno != EEXIST) {
-        // Worth spelling out: without the FIFO the player still plays, but it
-        // cannot be controlled, and every client sees "no player running" while
-        // clearly hearing one. EPERM here almost always means the directory is
-        // on a filesystem that cannot hold a FIFO, i.e. vfat.
+        // Spelled out because the symptom is confusing: the player still plays
+        // but cannot be controlled, and every client reports "no player running"
+        // while one is clearly audible. EPERM here nearly always means vfat.
         g_printerr("Could not create command FIFO '%s': %s\n", path.c_str(), strerror(errno));
         g_printerr("  Remote control is disabled: the player will play but cannot be\n"
                    "  paused, skipped or stopped, and clients will report no player\n"
@@ -741,9 +755,9 @@ static void teardown_control_channel(CliState* state) {
 }
 
 // --- Signal Handler ---
-// SIGTERM matters as much as SIGINT here: both launcher scripts stop background
-// playback with a plain pkill, and without this the FIFO and status file would
-// be left behind for the next instance to trip over.
+// SIGTERM matters as much as SIGINT: both launcher scripts stop background
+// playback with a plain pkill, and without this the FIFO and status file are
+// left behind for the next instance to trip over.
 void handle_sigint(int sig) {
     (void)sig;
     if (g_state) {
@@ -762,8 +776,10 @@ int main(int argc, char* argv[]) {
     state.loop = loop;
     state.current_index = -1;
     state.strategy = NORMAL;
+    state.volume = 1.0;
     state.explicit_playlist = false;
     state.is_radio_mode = false;
+    state.radio_from_list = false;
     state.daemon_mode = false;
     state.cmd_fd = -1;
     state.cmd_channel = NULL;
@@ -793,9 +809,9 @@ int main(int argc, char* argv[]) {
             state.is_radio_mode = false;
             radio_overridden = true;
         } else if (arg == "--daemon") {
-            // Stay alive when the list ends and accept commands indefinitely.
-            // Only the KOReader launcher passes this; startkinamp.sh relies on
-            // the process exiting so the booklet toggles back to the GUI.
+            // Stay alive when the list ends. Only the KOReader launcher passes
+            // this; startkinamp.sh needs the process to exit so the booklet
+            // toggles back to the GUI.
             state.daemon_mode = true;
         } else if (arg == "--idle") {
             // Daemon that starts with nothing playing, waiting for commands.
@@ -808,12 +824,26 @@ int main(int argc, char* argv[]) {
     }
 
     // 3. Load Configuration/Playlist
+    //
+    // The saved state is read whichever way we were started. Position and list
+    // only apply when nothing was named on the command line; volume always
+    // applies, since it belongs to the device rather than to the playlist -
+    // otherwise a resumed track comes back at full blast.
+    CliState saved_state;
+    saved_state.current_index = 0;
+    saved_state.strategy = NORMAL;
+    saved_state.is_radio_mode = false;
+    saved_state.volume = 1.0;
+    load_default_state(&saved_state);
+    state.volume = saved_state.volume;
+
     if (state.explicit_playlist) {
         if (state.is_radio_mode) {
             state.radio_urls.clear();
             state.radio_names.clear();
             state.radio_urls.push_back(playlist_arg);
             state.radio_names.push_back("Custom Stream");
+            state.radio_from_list = false;
             state.current_index = -1;
         } else {
             if (!load_playlist(playlist_arg, state.playlist)) {
@@ -824,22 +854,20 @@ int main(int argc, char* argv[]) {
             state.is_radio_mode = false;
         }
     } else {
-        CliState saved_state;
-        saved_state.current_index = 0;
-        saved_state.strategy = NORMAL;
-        saved_state.is_radio_mode = false;
-        load_default_state(&saved_state);
-
         if (!radio_overridden) {
             state.is_radio_mode = saved_state.is_radio_mode;
         }
 
-        // A daemon that finds nothing to play still starts up and waits for a
-        // "load" or "radio" command; a one-shot run has nothing to do and exits.
+        // A daemon with nothing to play still starts and waits for a "load" or
+        // "radio" command; a one-shot run has nothing to do and exits.
         if (state.is_radio_mode) {
             if (!load_radio_stations(&state)) {
                  g_printerr("Error: Could not load radio stations.\n");
                  if (!state.daemon_mode) return 1;
+            } else {
+                // The whole list, so an index means something the next startup
+                // can resume from.
+                state.radio_from_list = true;
             }
         } else {
             std::string default_pl = get_config_path(".kinamp_playlist.m3u");
@@ -877,6 +905,9 @@ int main(int argc, char* argv[]) {
     // 5. Start Playback
     backend.set_eos_callback(on_eos_callback, &state);
     backend.set_metadata_callback(on_metadata_callback, &state);
+    // Before the first file: the decoder keeps the level across tracks, so this
+    // is what everything plays at until a command changes it.
+    backend.set_volume(state.volume);
 
     g_print("KinAMP-minimal started.\n");
     if (state.is_radio_mode) {
@@ -889,8 +920,8 @@ int main(int argc, char* argv[]) {
     g_print("Strategy: %s\n", state.strategy == NORMAL ? "Normal" : (state.strategy == REPEAT ? "Repeat" : "Shuffle"));
     if (state.daemon_mode) g_print("Daemon mode: on\n");
 
-    // 5b. Control channel. Playback still works without it, so a failure here is
-    // reported but not fatal.
+    // 5b. Control channel. Playback works without it, so a failure is reported
+    // but not fatal.
     setup_command_fifo(&state);
     write_status(&state);
 

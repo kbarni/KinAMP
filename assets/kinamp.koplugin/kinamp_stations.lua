@@ -1,25 +1,23 @@
---[[--
-Radio station manager.
-
-The list the KinAMP players read from `.kinamp_radio.txt`, editable in place:
-tap a station to select it, tap it again (or hold it) to play, and the buttons
-along the bottom act on whatever is selected. Adding a station goes either
-through the bundled station database or by typing a name and a URL.
-
-Tapping selects rather than plays because everything else in the window needs
-to know which station you mean, and a list where the only way to point at a
-station is to start listening to it makes editing one an accident away from a
-burst of noise.
-
-This is the KOReader-side replacement for `radio_cli`, the little text-mode
-editor that had to be launched from KUAL with the reader closed.
-
-Adding a station is the one operation that is not instant: a good third of the
-links in the database are `.pls`/`.m3u` playlists, and the player has no
-playlist reader, so those have to be fetched and unwrapped down to a stream
-first (kinamp_stationdb.lua does the work). Everything that can be decided
-without the network is, so an "add" that needs no lookup never asks for Wi-Fi.
---]]
+-- Radio station manager.
+--
+-- The list the KinAMP players read from .kinamp_radio.txt, editable in place:
+-- tap a station to select it, tap it again (or hold it) to play, and the
+-- buttons along the bottom act on whatever is selected. Stations are added
+-- either from the bundled database or by typing a name and a URL.
+--
+-- Tapping selects rather than plays because everything else in the window needs
+-- to know which station you mean, and a list where the only way to point at a
+-- station is to start listening to it makes editing one an accident away from a
+-- burst of noise.
+--
+-- This replaces radio_cli, the text-mode editor that had to be launched from
+-- KUAL with the reader closed.
+--
+-- Adding a station is the one slow operation: a good third of the links in the
+-- database are .pls/.m3u playlists and the player has no playlist reader, so
+-- those have to be fetched and unwrapped down to a stream first (see
+-- kinamp_stationdb.lua). Anything that can be decided without the network is,
+-- so an add that needs no lookup never asks for Wi-Fi.
 
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -40,31 +38,30 @@ local T = ffiUtil.template
 local Screen = Device.screen
 
 -- How many playlists deep to keep unwrapping. Shoutcast's tunein-station.pls
--- legitimately points at another playlist; anything past this is a loop.
+-- legitimately points at another playlist; past this it's a loop.
 local MAX_RESOLVE_DEPTH = 3
 
 local PLAYING_MARK = "\u{25B6} "  -- the player widget marks the current track the same way
 local SELECTED_MARK = "\u{2022} "
 local ADDED_MARK = "\u{2713} "
 
---- Host part of a URL, for telling same-named stations apart in a result list.
+-- Host part of a URL, for telling same-named stations apart in a result list.
 local function url_host(url)
     return url:match("^%w+://([^/:]+)") or ""
 end
 
---- Shows a message that goes away on its own.
 local function notify(text, timeout)
     UIManager:show(InfoMessage:new{ text = text, timeout = timeout or 2 })
 end
 
---- Runs `work` with a message on screen.
--- The searches and the playlist lookups both block the UI thread for a second
--- or two, which is long enough that something has to say why.
+-- Runs `work` with a message on screen. Searches and playlist lookups both
+-- block the UI thread for a second or two, which is long enough that something
+-- has to say why.
 local function with_message(text, work)
     local info = InfoMessage:new{ text = text }
     UIManager:show(info)
-    -- The message is only worth showing if it gets painted before the work
-    -- starts rather than after it has finished.
+    -- Only worth showing if it gets painted before the work starts rather than
+    -- after it has finished.
     UIManager:forceRePaint()
     local ok, result, extra = pcall(work)
     UIManager:close(info)
@@ -75,13 +72,9 @@ local function with_message(text, work)
     return result, extra
 end
 
---=============================================================================
--- The list
---=============================================================================
-
 local StationManager = ButtonMenu:extend{
     title = _("Radio stations"),
-    -- Kept alongside the buttons: it is what the Menu key maps to on the
+    -- Kept alongside the buttons: it's what the Menu key maps to on the
     -- keyboard Kindles, which have no way to tap a button.
     title_bar_left_icon = "plus",
     -- Which station the bottom buttons act on, if any.
@@ -100,8 +93,8 @@ end
 
 function StationManager:genItemTable()
     local items = {}
-    -- Marking the station that is on the air makes the list double as a "what
-    -- am I listening to" view, which is how most of these get opened.
+    -- Marking the station that's on the air makes the list double as a "what am
+    -- I listening to" view, which is how most of these get opened.
     local status = Backend.get_status()
     local playing = status and status.is_radio and (status.station or status.path)
 
@@ -131,7 +124,7 @@ function StationManager:genItemTable()
     return items
 end
 
---- Points the bottom buttons at a station, or at nothing when idx is nil.
+-- Points the bottom buttons at a station, or at nothing when idx is nil.
 function StationManager:select(idx)
     if idx and (idx < 1 or idx > #self.stations) then idx = nil end
     self.selected_idx = idx
@@ -143,22 +136,20 @@ function StationManager:saveStations(keep_idx)
         notify(_("Could not save the station list."), 3)
         return false
     end
-    -- Whatever was just added, moved or edited is the obvious thing to leave
-    -- the buttons pointing at; a removal lands on whatever took its place.
+    -- Whatever was just added, moved or edited is the obvious thing to leave the
+    -- buttons pointing at; a removal lands on whatever took its place.
     self:select(keep_idx)
     return true
 end
 
---=============================================================================
--- Playing
---=============================================================================
-
-function StationManager:playStation(station)
-    local sent = Backend.play_radio(station.url)
+-- The position goes along with the stream: it's what .kinamp.conf keeps, so a
+-- player started later comes back to this station.
+function StationManager:playStation(station, idx)
+    local sent = Backend.play_radio(station.url, idx)
     notify(T(_("Playing: %1"), station.name))
     if not sent then
-        -- Nothing was listening, so a player is starting up: tell the user if
-        -- it never answers, rather than leaving them with a silent device.
+        -- Nothing was listening, so a player is starting up. Say so if it never
+        -- answers, rather than leaving the user with a silent device.
         Backend.wait_until_running(function(ok)
             if not ok then
                 notify(_("KinAMP failed to start."), 3)
@@ -168,14 +159,13 @@ function StationManager:playStation(station)
     self:onClose()
 end
 
---- First tap selects, a second one on the same station plays it.
--- KOReader has no double-tap on menu items, and this is as close as it gets:
--- the station you are pointing at is one more tap from playing, and holding it
--- skips the selection step entirely.
+-- First tap selects, a second one on the same station plays it. KOReader has no
+-- double-tap on menu items and this is as close as it gets; holding a station
+-- skips the selection step.
 function StationManager:onMenuSelect(item)
     if not item.station then return true end
     if self.selected_idx == item.idx then
-        self:playStation(item.station)
+        self:playStation(item.station, item.idx)
     else
         self:select(item.idx)
     end
@@ -183,13 +173,9 @@ function StationManager:onMenuSelect(item)
 end
 
 function StationManager:onMenuHold(item)
-    if item.station then self:playStation(item.station) end
+    if item.station then self:playStation(item.station, item.idx) end
     return true
 end
-
---=============================================================================
--- The button row
---=============================================================================
 
 function StationManager:genButtons()
     local function has_selection() return self.selected_idx ~= nil end
@@ -209,7 +195,7 @@ function StationManager:genButtons()
                 text = _("Play"),
                 enabled_func = has_selection,
                 callback = on_selection(function(idx)
-                    self:playStation(self.stations[idx])
+                    self:playStation(self.stations[idx], idx)
                 end),
             },
             {
@@ -244,10 +230,6 @@ function StationManager:genButtons()
     }
 end
 
---=============================================================================
--- Per-station actions
---=============================================================================
-
 function StationManager:moveStation(idx, delta)
     local target = idx + delta
     if target < 1 or target > #self.stations then return end
@@ -269,11 +251,7 @@ function StationManager:confirmRemove(idx)
     })
 end
 
---=============================================================================
--- Adding and editing
---=============================================================================
-
---- The title bar's + and the "Add station" button are the same thing.
+-- The title bar's + and the "Add station" button are the same thing.
 function StationManager:onLeftButtonTap()
     self:showAddDialog()
     return true
@@ -309,8 +287,8 @@ function StationManager:showAddDialog()
     UIManager:show(dialog)
 end
 
---- Name/URL editor, used both for a new station and for changing one.
--- @param idx station to edit, or nil to append a new one
+-- Name/URL editor, for both a new station and an existing one. idx is nil to
+-- append a new station.
 function StationManager:showEditDialog(idx)
     local station = idx and self.stations[idx] or { name = "", url = "" }
     local dialog
@@ -356,10 +334,10 @@ function StationManager:showEditDialog(idx)
     dialog:onShowKeyboard()
 end
 
---- Takes a station from wherever it came from and works out what to store.
--- @param idx station to overwrite, or nil to append
--- @param on_done optional, called with the stored station once it is in the
---                list - which may be several dialogs later, or never
+-- Takes a station from wherever it came from and works out what to store. idx
+-- is the station to overwrite, or nil to append. on_done is called with the
+-- stored station once it's in the list, which may be several dialogs later, or
+-- never.
 function StationManager:acceptStation(name, url, idx, on_done)
     url = url:gsub("%s", "")
     name = (name or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -376,9 +354,9 @@ function StationManager:acceptStation(name, url, idx, on_done)
         return self:resolveStation(station, 1, idx, on_done)
     end
 
-    -- Offline. A named playlist is unplayable as it stands, so it is worth
-    -- asking; an unknown link only *might* be one, and going online to find
-    -- out is not worth interrupting anybody for.
+    -- Offline. A named playlist is unplayable as it stands, so it's worth
+    -- asking; an unknown link only *might* be one, and going online to find out
+    -- isn't worth interrupting anybody for.
     if kind ~= "playlist" then
         return self:commitStation(station, idx, on_done)
     end
@@ -390,15 +368,15 @@ function StationManager:acceptStation(name, url, idx, on_done)
                 self:resolveStation(station, 1, idx, on_done)
             end)
         end,
-        -- Deliberately not the Cancel button: that one also fires when the box
-        -- is dismissed with a tap outside, and adding a station off the back of
-        -- "go away" is not what anybody meant.
+        -- Not the Cancel button: that one also fires when the box is dismissed
+        -- with a tap outside, and adding a station off the back of "go away" is
+        -- not what anybody meant.
         other_buttons = { { { text = _("Add as is"),
             callback = function() self:commitStation(station, idx, on_done) end } } },
     })
 end
 
---- Unwraps playlists until a stream is left, asking when there is a choice.
+-- Unwraps playlists until a stream is left, asking when there's a choice.
 function StationManager:resolveStation(station, depth, idx, on_done)
     if depth > MAX_RESOLVE_DEPTH then
         return self:commitStation(station, idx, on_done)
@@ -424,8 +402,8 @@ function StationManager:resolveStation(station, depth, idx, on_done)
         return self:resolveStation(station, depth + 1, idx, on_done)
     end
 
-    -- Several streams: these are usually the same audio on different servers,
-    -- so which one is picked matters and we cannot pick it for them.
+    -- Several streams: usually the same audio on different servers, so which
+    -- one is picked matters and we can't pick it for them.
     local items = {}
     for _i, stream in ipairs(streams) do
         items[#items + 1] = {
@@ -459,7 +437,7 @@ function StationManager:resolveStation(station, depth, idx, on_done)
     UIManager:show(picker)
 end
 
---- Puts the finished station into the list and saves it.
+-- Puts the finished station into the list and saves it.
 function StationManager:commitStation(station, idx, on_done)
     if StationDB.is_unsupported(station.url) then
         notify(_("HLS (.m3u8) streams are not supported yet."), 3)
@@ -485,10 +463,6 @@ function StationManager:commitStation(station, idx, on_done)
     notify(T(_("Added: %1"), station.name))
     if on_done then on_done(station) end
 end
-
---=============================================================================
--- Searching the bundled database
---=============================================================================
 
 function StationManager:showSearchDialog()
     if not StationDB.db_path() then
@@ -567,7 +541,7 @@ function StationManager:showResults(query, results, truncated)
     local menu
     local ResultMenu = Menu:extend{}
 
-    -- Tapping a result adds it; the list stays open with a tick against what
+    -- Tapping a result adds it and the list stays open with a tick against what
     -- went in, because looking for one station and adding three is the normal
     -- way this gets used.
     function ResultMenu:onMenuSelect(item)
@@ -580,7 +554,7 @@ function StationManager:showResults(query, results, truncated)
             -- The URL that got stored is the resolved one; mark that too, so a
             -- second tap on the same row is caught.
             added[station.url] = true
-            -- Redrawn on the page it was tapped on, not back at the top.
+            -- Redraw on the page it was tapped on, not back at the top.
             self:switchItemTable(nil, gen_items(), (self.page - 1) * self.perpage + 1)
         end)
         return true
@@ -621,13 +595,8 @@ function StationManager:showResults(query, results, truncated)
     UIManager:show(menu)
 end
 
---=============================================================================
--- Entry point
---=============================================================================
-
---- Opens the manager.
--- @param opts.on_close called once the list is dismissed, so a caller that
---                      shows playback state can pick up whatever changed
+-- opts.on_close is called once the list is dismissed, so a caller showing
+-- playback state can pick up whatever changed.
 function StationManager.open(opts)
     opts = opts or {}
     local menu

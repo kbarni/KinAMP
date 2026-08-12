@@ -6,10 +6,10 @@
 #include <string.h>
 #include <vector>
 
-// Tag parsing runs against whatever happens to sit on the Kindle's storage, so
-// every length field read from a file is treated as hostile: sizes are clamped
-// and every access is bounds checked. A corrupt tag must degrade to "no tags",
-// never to a huge allocation or a crash.
+// Tag parsing runs over whatever happens to be on the Kindle's storage, so
+// every length field read from a file is assumed hostile: sizes clamped, all
+// accesses bounds checked. A corrupt tag has to end up as "no tags", not as a
+// huge allocation or a crash.
 
 namespace {
 
@@ -34,15 +34,15 @@ unsigned le32(const unsigned char* p) {
            ((unsigned)p[1] << 8)  |  (unsigned)p[0];
 }
 
-// ID3 stores sizes with the high bit of every byte cleared, so that a size can
-// never look like an MPEG sync word.
+// ID3 clears the high bit of every size byte, so a size can never look like an
+// MPEG sync word.
 unsigned syncsafe32(const unsigned char* p) {
     return ((unsigned)(p[0] & 0x7F) << 21) | ((unsigned)(p[1] & 0x7F) << 14) |
            ((unsigned)(p[2] & 0x7F) << 7)  |  (unsigned)(p[3] & 0x7F);
 }
 
-// Reads up to len bytes at offset. The buffer is shrunk to what was actually
-// read, so a truncated file yields a short buffer rather than a failure.
+// Reads up to len bytes at offset. The buffer shrinks to what was actually
+// read, so a truncated file gives a short buffer, not a failure.
 bool read_at(FILE* f, long offset, size_t len, Buffer* out) {
     if (len == 0 || len > MAX_TAG_BYTES) return false;
     if (fseek(f, offset, SEEK_SET) != 0) return false;
@@ -53,20 +53,18 @@ bool read_at(FILE* f, long offset, size_t len, Buffer* out) {
 }
 
 // Cuts a single byte string at its first NUL. ID3 strings are NUL terminated,
-// ID3v1 fields are NUL padded, and an ID3v2.4 frame packs its extra values
-// behind the terminator; we only ever want the first one.
+// ID3v1 fields NUL padded, and an ID3v2.4 frame packs extra values behind the
+// terminator. We only want the first one.
 size_t nul_trim(const char* data, size_t len) {
     const void* nul = memchr(data, '\0', len);
     return (nul != NULL) ? (size_t)((const char*)nul - data) : len;
 }
 
-// Converts raw tag bytes to UTF-8 and trims surrounding whitespace. Anything
-// that cannot be interpreted comes back empty, so a garbled tag falls through
-// to the next source instead of putting mojibake on the label.
-//
-// A NULL charset means the bytes are already UTF-8. The two byte encodings keep
-// their embedded NULs through the conversion and are cut by building the
-// std::string from a C string, which stops at the first one.
+// Raw tag bytes to UTF-8, whitespace trimmed. Anything uninterpretable comes
+// back empty, so a garbled tag falls through to the next source instead of
+// putting mojibake on the label. A NULL charset means the bytes are already
+// UTF-8. The two byte encodings keep their embedded NULs through the
+// conversion; building the std::string from a C string cuts at the first one.
 std::string to_utf8(const char* data, size_t len, const char* from_charset) {
     if (data == NULL || len == 0) return "";
 
@@ -86,10 +84,9 @@ std::string to_utf8(const char* data, size_t len, const char* from_charset) {
     return result;
 }
 
-// For the fields whose spec says latin1 (ID3v1, ID3v2 encoding 0, RIFF INFO)
-// but which taggers routinely fill with UTF-8 anyway. Latin1 accented bytes are
-// almost never valid UTF-8, so preferring UTF-8 when it validates picks the
-// right one in practice.
+// For fields the spec calls latin1 (ID3v1, ID3v2 encoding 0, RIFF INFO) that
+// taggers fill with UTF-8 anyway. Latin1 accented bytes are almost never valid
+// UTF-8, so preferring UTF-8 when it validates picks right in practice.
 std::string to_utf8_lenient(const char* data, size_t len) {
     if (data == NULL || len == 0) return "";
 
@@ -111,8 +108,8 @@ bool needs_more(const AudioTags& tags) {
 // Vorbis comments (FLAC and Ogg share this format verbatim)
 // ---------------------------------------------------------------------------
 
-// Stops cleanly on a truncated buffer, keeping whatever was found so far. That
-// matters for Ogg, where the comment packet may run past our scan window.
+// Stops cleanly on a truncated buffer, keeping what was found so far. Matters
+// for Ogg, where the comment packet can run past our scan window.
 void parse_vorbis_comment(const unsigned char* p, size_t len, AudioTags* out) {
     if (len < 8) return;
 
@@ -209,8 +206,7 @@ void parse_id3v2(FILE* f, AudioTags* out) {
     Buffer body;
     if (!read_at(f, 10, h.body_size, &body)) return;
 
-    // In 2.2 and 2.3 unsynchronisation applies to the whole tag; 2.4 moved it to
-    // a per frame flag.
+    // 2.2 and 2.3 unsynchronise the whole tag; 2.4 moved it to a per frame flag.
     if (h.major < 4 && (h.flags & 0x80)) remove_unsync(&body);
 
     size_t pos = 0;
@@ -238,8 +234,8 @@ void parse_id3v2(FILE* f, AudioTags* out) {
             fsize = be32(fh + 4);
             fflags = fh[9];
         } else {
-            // Plenty of taggers write 2.4 frame sizes as plain big endian. A byte
-            // with the high bit set proves the field is not syncsafe.
+            // Plenty of taggers write 2.4 frame sizes as plain big endian. Any
+            // byte with the high bit set proves it isn't syncsafe.
             bool syncsafe = (fh[4] | fh[5] | fh[6] | fh[7]) < 0x80;
             fsize = syncsafe ? syncsafe32(fh + 4) : be32(fh + 4);
             fflags = fh[9];
@@ -274,8 +270,8 @@ void parse_id3v2(FILE* f, AudioTags* out) {
     }
 }
 
-// The duration estimate has to leave an ID3v1 tag out of the audio byte count,
-// whether or not the tag turned out to be needed for its fields.
+// The duration estimate must leave an ID3v1 tag out of the audio byte count,
+// whether or not we needed the tag for its fields.
 bool has_id3v1_tag(FILE* f) {
     unsigned char tag[3];
     if (fseek(f, -128L, SEEK_END) != 0) return false;
@@ -341,8 +337,8 @@ void parse_ogg_comment_packet(const Buffer& packet, bool ogg_flac, AudioTags* ou
     }
 }
 
-// Walks Ogg pages looking for the second packet of the first logical stream,
-// which is where every codec we care about puts its comment header.
+// Walks Ogg pages for the second packet of the first logical stream. Every
+// codec we care about puts its comment header there.
 void parse_ogg(FILE* f, long offset, AudioTags* out) {
     Buffer buf;
     if (!read_at(f, offset, MAX_OGG_SCAN, &buf)) return;
@@ -399,15 +395,15 @@ void parse_ogg(FILE* f, long offset, AudioTags* out) {
 // MP4 / M4A / M4B (iTunes style metadata in moov.udta.meta.ilst)
 // ---------------------------------------------------------------------------
 //
-// The player decodes these with mp4read, which has richer metadata, but that
+// The player decodes these with mp4read, whose metadata is richer, but that
 // library keeps its state in one global struct behind a mutex the decoder holds
-// for as long as a track plays. Walking the atoms here keeps tag reading
-// independent of playback.
+// for the whole track. Walking the atoms here keeps tag reading independent of
+// playback.
 
 const int MAX_ATOMS = 256;
 
-// Reads the atom header at pos, yielding the range of its payload and the
-// position of the next sibling.
+// Reads the atom header at pos, giving back the range of its payload and where
+// the next sibling starts.
 bool read_atom(FILE* f, long pos, long limit, char type[4], long* body, long* end) {
     if (pos < 0 || limit - pos < 8) return false;
 
@@ -456,8 +452,8 @@ bool find_atom(FILE* f, long start, long limit, const char* want,
     return false;
 }
 
-// Every ilst entry wraps its value in a 'data' atom: a 4 byte type indicator
-// (1 means UTF-8 text), a 4 byte locale, then the payload.
+// Every ilst entry wraps its value in a 'data' atom: 4 byte type indicator
+// (1 = UTF-8 text), 4 byte locale, then the payload.
 std::string read_ilst_value(FILE* f, long start, long limit) {
     long body = 0, end = 0;
     if (!find_atom(f, start, limit, "data", &body, &end)) return "";
@@ -488,8 +484,8 @@ void parse_mp4(FILE* f, long start, long file_end, AudioTags* out) {
         return;
     }
 
-    // The tag names start with the 0xA9 copyright sign, written in octal so the
-    // escape cannot swallow the letter that follows it.
+    // The tag names start with the 0xA9 copyright sign, in octal so the escape
+    // can't swallow the letter after it.
     long b = 0, e = 0;
     if (find_atom(f, ilst_b, ilst_e, "\251nam", &b, &e)) out->title = read_ilst_value(f, b, e);
     if (find_atom(f, ilst_b, ilst_e, "\251ART", &b, &e)) out->artist = read_ilst_value(f, b, e);
@@ -555,11 +551,10 @@ void parse_wav(FILE* f, long offset, AudioTags* out) {
 // Duration
 // ---------------------------------------------------------------------------
 //
-// Every length below is read out of a header: a movie header atom, a FLAC
-// STREAMINFO block, an Ogg granule position, a RIFF chunk size, an MP3 Xing
-// frame count. Decoding a file to the end would be exact, but the playlist scan
-// runs over every file the user added, and on the Kindle's storage that costs
-// seconds per track. Headers cost a few seeks.
+// Every length below comes out of a header: movie header atom, FLAC STREAMINFO,
+// Ogg granule position, RIFF chunk size, MP3 Xing frame count. Decoding to the
+// end would be exact, but the playlist scan touches every file the user added,
+// and on Kindle storage that costs seconds per track. Headers cost a few seeks.
 
 const size_t MAX_OGG_TAIL = 128u * 1024;  // larger than one maximum sized page
 const size_t MAX_MP3_SCAN = 128u * 1024;  // junk tolerated before the first frame
@@ -570,9 +565,9 @@ unsigned long long le64(const unsigned char* p) {
     return v;
 }
 
-// Rounds to the nearest second, so a track of 239.6 seconds reads as 4:00 and
-// not 3:59. A zero divisor means the header did not say, which is not an error:
-// the caller shows the row without a length.
+// Rounds to the nearest second: 239.6 seconds should read 4:00, not 3:59. A
+// zero divisor means the header didn't say, which is not an error - the caller
+// shows the row without a length.
 int seconds_from(unsigned long long units, unsigned long long per_second) {
     if (per_second == 0 || units == 0) return 0;
     unsigned long long secs = (units + per_second / 2) / per_second;
@@ -604,8 +599,8 @@ int mp4_duration(FILE* f, long start, long file_end) {
 }
 
 // FLAC: STREAMINFO packs a 20 bit sample rate, 3 bits of channel count and 5 of
-// bit depth in front of a 36 bit total sample count, so the fields straddle
-// byte boundaries.
+// bit depth ahead of a 36 bit sample count, so the fields straddle byte
+// boundaries.
 int flac_streaminfo_duration(const unsigned char* p, size_t len) {
     if (len < 18) return 0;
     unsigned rate = ((unsigned)p[10] << 12) | ((unsigned)p[11] << 4) |
@@ -616,7 +611,7 @@ int flac_streaminfo_duration(const unsigned char* p, size_t len) {
 }
 
 int flac_duration(FILE* f, long offset) {
-    // STREAMINFO is mandatory and always comes first, so no block walk is needed.
+    // STREAMINFO is mandatory and always first, so no block walk needed.
     Buffer block;
     if (!read_at(f, offset + 4, 4 + 34, &block) || block.size() < 4 + 18) return 0;
     if ((block[0] & 0x7F) != 0) return 0;
@@ -649,8 +644,8 @@ int wav_duration(FILE* f, long offset, long file_end) {
                 byte_rate = le32(fmt + 8);
             }
         } else if (memcmp(ch, "data", 4) == 0) {
-            // Files written by a streaming encoder leave the size unfilled, in
-            // which case the audio runs to the end of the file.
+            // Streaming encoders leave the size unfilled; then the audio runs
+            // to the end of the file.
             long remaining = file_end - pos;
             if (remaining < 0) remaining = 0;
             data_bytes = (clen == 0 || clen > (size_t)remaining)
@@ -663,9 +658,9 @@ int wav_duration(FILE* f, long offset, long file_end) {
     return seconds_from(data_bytes, byte_rate);
 }
 
-// Ogg: the granule position on the last page of a stream is its length in
-// samples, so the length needs the first packet (for the rate) and the tail of
-// the file (for the granule).
+// Ogg: the granule position on the last page is the length in samples, so this
+// needs the first packet (for the rate) and the tail of the file (for the
+// granule).
 struct OggInfo {
     unsigned serial;
     unsigned rate;      // granule ticks per second
@@ -680,8 +675,8 @@ void ogg_identify(const Buffer& packet, unsigned serial, OggInfo* info) {
         memcmp(&packet[1], "vorbis", 6) == 0) {
         info->rate = le32(&packet[12]);
     } else if (packet.size() >= 19 && memcmp(&packet[0], "OpusHead", 8) == 0) {
-        // Opus granule positions are always counted at 48 kHz, whatever the
-        // original sample rate was.
+        // Opus granule positions are always at 48 kHz, whatever the original
+        // sample rate was.
         info->rate = 48000;
         info->pre_skip = ((unsigned)packet[11] << 8) | packet[10];
     } else if (packet.size() > 29 && packet[0] == 0x7F &&
@@ -698,9 +693,9 @@ void ogg_identify(const Buffer& packet, unsigned serial, OggInfo* info) {
     }
 }
 
-// The last page of the stream is near the end of the file, but padding or a
-// trailing tag can follow it, so the tail is scanned for the highest granule
-// position belonging to our stream rather than assuming the final page.
+// The last page is near the end of the file, but padding or a trailing tag can
+// follow it. So scan the tail for the highest granule position belonging to our
+// stream rather than assuming the final page.
 unsigned long long ogg_last_granule(FILE* f, long file_end, unsigned serial) {
     size_t want = (file_end > 0 && (size_t)file_end < MAX_OGG_TAIL)
                       ? (size_t)file_end
@@ -716,7 +711,7 @@ unsigned long long ogg_last_granule(FILE* f, long file_end, unsigned serial) {
         if (le32(&tail[pos + 14]) != serial) continue;
 
         unsigned long long granule = le64(&tail[pos + 6]);
-        // -1 marks a page that completes no packet; it is not a length.
+        // -1 marks a page that completes no packet, not a length.
         if (granule != 0xFFFFFFFFFFFFFFFFull && granule > best) best = granule;
     }
     return best;
@@ -726,8 +721,8 @@ int ogg_duration(FILE* f, long offset, long file_end) {
     Buffer buf;
     if (!read_at(f, offset, MAX_OGG_SCAN, &buf)) return 0;
 
-    // Only the first packet of the first logical stream is needed; the codec
-    // identification header is required to fit in a single page.
+    // Only the first packet of the first logical stream. The codec ID header is
+    // required to fit in a single page.
     if (buf.size() < 27 || memcmp(&buf[0], "OggS", 4) != 0) return 0;
     unsigned serial = le32(&buf[14]);
     unsigned nsegs = buf[26];
@@ -818,9 +813,9 @@ bool parse_mp3_header(const unsigned char* h, Mp3Frame* out) {
     return out->size > 4;
 }
 
-// Xing sits after the side information, whose length depends on the version and
-// channel mode; VBRI always sits at a fixed offset. Returns the frame count the
-// header advertises, or 0 when neither header is there.
+// Xing sits after the side information, whose length depends on version and
+// channel mode; VBRI is at a fixed offset. Returns the advertised frame count,
+// or 0 if neither header is there.
 unsigned long long mp3_vbr_frames(FILE* f, long frame_pos, const Mp3Frame& frame) {
     size_t xing_at = frame.mpeg1 ? (frame.mono ? 21 : 36) : (frame.mono ? 13 : 21);
 
@@ -844,9 +839,9 @@ int mp3_duration(FILE* f, long start, long file_end, bool has_id3v1) {
     Buffer buf;
     if (!read_at(f, start, MAX_MP3_SCAN, &buf) || buf.size() < 4) return 0;
 
-    // Some files carry junk between the tag and the first frame, and a lone sync
-    // pattern can occur inside it, so a candidate only counts when the frame it
-    // describes is followed by another sync word.
+    // Some files carry junk between the tag and the first frame, and a lone
+    // sync pattern can turn up inside it. So a candidate only counts if the
+    // frame it describes is followed by another sync word.
     Mp3Frame frame;
     long frame_pos = -1;
     for (size_t i = 0; i + 4 <= buf.size(); ++i) {
@@ -887,8 +882,8 @@ bool read_audio_tags(const char* filepath, AudioTags* out) {
     FILE* f = fopen(filepath, "rb");
     if (f == NULL) return false;
 
-    // An ID3v2 tag can sit in front of any of these containers, so find where the
-    // container actually starts before sniffing its magic.
+    // An ID3v2 tag can sit in front of any of these containers, so find where
+    // the container really starts before sniffing its magic.
     Id3Header id3;
     bool has_id3 = read_id3_header(f, &id3);
     long start = has_id3 ? (long)id3.total_size : 0;
@@ -906,8 +901,8 @@ bool read_audio_tags(const char* filepath, AudioTags* out) {
         if (size > 0) file_end = size;
     }
 
-    // Native container tags win over a prepended ID3 tag, which is only ever a
-    // compatibility bolt-on when it appears on FLAC, Ogg or WAV.
+    // Native container tags beat a prepended ID3 tag, which on FLAC, Ogg or WAV
+    // is only ever a compatibility bolt-on.
     bool known_container = true;
     if (memcmp(magic, "fLaC", 4) == 0) {
         parse_flac(f, start, out);
@@ -925,9 +920,9 @@ bool read_audio_tags(const char* filepath, AudioTags* out) {
         known_container = false;
     }
 
-    // Only MP3 and raw AAC reach for ID3v1: on a real container the last 128
-    // bytes are audio, and could match "TAG" by chance. The same goes for
-    // reading the stream as MPEG audio frames.
+    // Only MP3 and raw AAC look for ID3v1: on a real container the last 128
+    // bytes are audio and could match "TAG" by chance. Same for reading the
+    // stream as MPEG audio frames.
     bool id3v1 = !known_container && has_id3v1_tag(f);
 
     if (has_id3 && needs_more(*out)) {

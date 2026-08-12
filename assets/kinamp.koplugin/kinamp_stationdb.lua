@@ -1,17 +1,13 @@
---[[--
-Station discovery for KinAMP.
-
-Two jobs, both of them ports of what `radio_cli` does on the device:
-
-  * searching `allStations.json`, the 3.4 MB radio-browser dump shipped next to
-    the binaries, for stations whose name matches what the user typed;
-  * turning the link the database gives us into something the player can
-    actually stream, because a good third of those links are `.pls`/`.m3u`
-    playlists rather than streams and the player has no playlist reader of its
-    own (see `decode_stream()` in music_backend.cpp - it expects audio).
-
-Nothing here draws anything; kinamp_stations.lua owns the UI.
---]]
+-- Station discovery. Two jobs, both ports of what radio_cli does on the device:
+--
+--   * searching allStations.json, the 3.4 MB radio-browser dump shipped next to
+--     the binaries, for stations whose name matches what the user typed;
+--   * turning the link the database gives us into something the player can
+--     actually stream, since a good third of those links are .pls/.m3u
+--     playlists and the player has no playlist reader of its own (see
+--     decode_stream() in music_backend.cpp, which expects audio).
+--
+-- Nothing here draws anything; kinamp_stations.lua owns the UI.
 
 local http = require("socket.http")
 local https = require("ssl.https")
@@ -24,28 +20,23 @@ local Config = require("kinamp_config")
 
 local StationDB = {}
 
---=============================================================================
--- The bundled database
---=============================================================================
-
 -- The file is a single 3.4 MB line - [["name","url"],["name","url"],...] - with
--- no newline anywhere in it, so it cannot be read a record at a time. Reading
--- all of it into one Lua string would work but wastes several megabytes on a
--- device that has a few hundred; instead it is read in chunks that are split on
--- record boundaries, so each piece parses on its own.
+-- no newline anywhere, so it can't be read a record at a time. Reading all of it
+-- into one Lua string would work but wastes several MB on a device that has a
+-- few hundred, so it's read in chunks split on record boundaries and each piece
+-- is searched on its own.
 local CHUNK_SIZE = 192 * 1024
 local RECORD_SEP = '"],["'
 
--- Enough to fill a good few pages of results without turning the picker into a
--- list nobody scrolls to the end of.
+-- Enough for a good few pages of results without turning the picker into a list
+-- nobody scrolls to the end of.
 StationDB.MAX_RESULTS = 400
 
 local PLUGIN_DIR = debug.getinfo(1, "S").source:match("@?(.*/)") or "./"
 
---- Locates allStations.json.
--- On the device it sits in the install directory next to the binaries. The
--- other candidates are for running the plugin off-device, where it is checked
--- out inside the source tree and the database is its parent directory's.
+-- On the device the database sits in the install dir next to the binaries. The
+-- other candidates are for running the plugin off-device, where it's checked out
+-- inside the source tree and the database belongs to a parent directory.
 function StationDB.db_path()
     local candidates = {
         Config.stations_db,
@@ -64,8 +55,8 @@ local JSON_ESCAPES = {
     b = "\b", f = "\f", n = "\n", r = "\r", t = "\t",
 }
 
---- Expands JSON escapes in a string that has already been cut out of the file.
--- Only about one name in twenty carries any, hence the early bail-out.
+-- Expands JSON escapes in a string already cut out of the file. Only about one
+-- name in twenty carries any, hence the early bail-out.
 local function unescape(s)
     if not s:find("\\", 1, true) then return s end
     local out, i = {}, 1
@@ -89,9 +80,9 @@ local function unescape(s)
     return table.concat(out)
 end
 
---- Reads the JSON string whose opening quote is at `i`.
--- @return its raw (still escaped) contents and the index just past the closing
---         quote, or nil if the string does not end within `s`
+-- Reads the JSON string whose opening quote is at `i`. Returns its raw (still
+-- escaped) contents and the index just past the closing quote, or nil if the
+-- string doesn't end within `s`.
 local function scan_string(s, i)
     if s:sub(i, i) ~= '"' then return nil end
     local j = i + 1
@@ -105,7 +96,7 @@ local function scan_string(s, i)
     end
 end
 
---- Index of the last occurrence of a plain substring.
+-- Index of the last occurrence of a plain substring.
 local function rfind(s, needle)
     local last, init = nil, 1
     while true do
@@ -115,7 +106,7 @@ local function rfind(s, needle)
     end
 end
 
---- Matches one piece of the database, appending hits to `results`.
+-- Matches one piece of the database, appending hits to `results`.
 --
 -- Records are never parsed up front: 45 000 of them would mean 90 000 throwaway
 -- strings per search. Instead the piece is lowercased once and searched for the
@@ -138,9 +129,9 @@ local function search_piece(text, probe, terms, phrase, results, seen, max_resul
         end
         if record_start then
             local raw_name, after_name = scan_string(text, record_start + 1)
-            -- A hit past the name is one inside the URL; the database is full
-            -- of hostnames that read like a station name and matching them
-            -- would drown the results the user meant.
+            -- A hit past the name is one inside the URL. The database is full of
+            -- hostnames that read like a station name, and matching them would
+            -- drown the results the user meant.
             if raw_name and hit < after_name then
                 local url_quote = text:find('"', after_name, true)
                 local raw_url = url_quote and scan_string(text, url_quote)
@@ -156,8 +147,8 @@ local function search_piece(text, probe, terms, phrase, results, seen, max_resul
                     end
                     if matched and name ~= "" then
                         local url = unescape(raw_url)
-                        -- The dump lists the same station once per server it
-                        -- was ever seen on, so duplicates are the rule.
+                        -- The dump lists the same station once per server it was
+                        -- ever seen on, so duplicates are the rule.
                         local key = name_lower .. "|" .. url
                         if not seen[key] then
                             seen[key] = true
@@ -174,10 +165,9 @@ local function search_piece(text, probe, terms, phrase, results, seen, max_resul
     end
 end
 
---- Searches the bundled database by station name.
--- Space-separated words all have to appear, in any order, case-insensitively.
--- @return list of {name=, url=} and whether the result was cut short at
---         MAX_RESULTS, or nil plus an error key
+-- Searches the bundled database by station name. Space-separated words all have
+-- to appear, in any order, case-insensitively. Returns a list of {name=, url=}
+-- and whether the result was cut short at MAX_RESULTS, or nil plus an error key.
 function StationDB.search(query, max_results)
     local path = StationDB.db_path()
     if not path then return nil, "nodb" end
@@ -207,8 +197,8 @@ function StationDB.search(query, max_results)
             local data = f:read(CHUNK_SIZE)
             if not data then break end
             buf = #buf > 0 and (buf .. data) or data
-            -- Split on a record boundary so the piece we hand over contains
-            -- only whole records and the leftover starts on the next one.
+            -- Split on a record boundary so the piece we hand over holds only
+            -- whole records and the leftover starts on the next one.
             local cut = rfind(buf, RECORD_SEP)
             if cut then
                 search_piece(buf:sub(1, cut + 1), probe, terms, phrase, results, seen, max_results)
@@ -226,10 +216,10 @@ function StationDB.search(query, max_results)
         return nil, "read"
     end
 
-    -- Names that contain the whole query go first. Matching the words
-    -- separately is what makes "radio jazz" find "Jazz Radio" at all, but on
-    -- its own it also buries "Triple R" under every station with a "triple"
-    -- and an "r" somewhere in it.
+    -- Names containing the whole query go first. Matching the words separately
+    -- is what makes "radio jazz" find "Jazz Radio" at all, but on its own it
+    -- also buries "Triple R" under every station with a "triple" and an "r"
+    -- somewhere in it.
     if #terms > 1 then
         local exact, rest = {}, {}
         for _, station in ipairs(results) do
@@ -245,9 +235,7 @@ function StationDB.search(query, max_results)
     return results, #results >= max_results
 end
 
---=============================================================================
 -- Making a link playable
---=============================================================================
 
 -- Station URLs routinely hide their extension behind a query string
 -- (listen.pls?sid=25), so only the path is ever tested.
@@ -261,11 +249,11 @@ end
 
 local AUDIO_EXT = { ".mp3", ".aac", ".ogg", ".opus", ".flac", ".m3u8" }
 
---- What we can tell about a link before touching the network.
--- "playlist" - named .pls/.m3u, has to be fetched to get at the stream
--- "audio"    - a stream URL as it stands, nothing to resolve
--- "unknown"  - no extension to go on (listen.php?port=8000 and friends); worth
---              a small probe, but not worth failing over
+-- What we can tell about a link without touching the network:
+--   "playlist"  named .pls/.m3u, has to be fetched to get at the stream
+--   "audio"     a stream URL as it stands, nothing to resolve
+--   "unknown"   no extension to go on (listen.php?port=8000 and friends);
+--               worth a small probe, but not worth failing over
 function StationDB.link_kind(link)
     link = tostring(link or "")
     if has_ext(link, ".pls") or has_ext(link, ".m3u") then return "playlist" end
@@ -275,16 +263,15 @@ function StationDB.link_kind(link)
     return "unknown"
 end
 
---- True for streams the player cannot decode yet.
 -- AAC/ADTS is handled by FAAD2, but HLS is a segmented transport rather than a
--- plain stream and there is nothing in music_backend.cpp that speaks it.
+-- plain stream and there's nothing in music_backend.cpp that speaks it.
 function StationDB.is_unsupported(link)
     return has_ext(tostring(link or ""), ".m3u8")
 end
 
---- Sink that stops the transfer once `max_bytes` have arrived.
--- Playlists are small, but an entry that turns out to be a stream would
--- otherwise download until the battery ran out.
+-- Stops the transfer once `max_bytes` have arrived. Playlists are small, but an
+-- entry that turns out to be a stream would otherwise download until the
+-- battery ran out.
 local function capped_sink(chunks, max_bytes)
     local received = 0
     return function(chunk)
@@ -296,11 +283,10 @@ local function capped_sink(chunks, max_bytes)
     end
 end
 
---- Fetches at most `max_bytes` of `link`.
--- Redirects are followed by hand because they cross schemes all the time here
--- (plain http station links redirecting to https), and LuaSocket only ever
--- follows a redirect with the module the request started in.
--- @return body, or nil plus an error string
+-- Fetches at most `max_bytes` of `link`, returning the body or nil plus an
+-- error string. Redirects are followed by hand because they cross schemes all
+-- the time here (plain http station links redirecting to https), and LuaSocket
+-- only follows a redirect with the module the request started in.
 local function http_fetch(link, max_bytes)
     for _ = 1, 4 do
         local parsed = url_parser.parse(link)
@@ -324,9 +310,9 @@ local function http_fetch(link, max_bytes)
 
         if not ok then
             -- Our own cap firing means the body arrived and we simply stopped
-            -- reading it; anything else is a real failure. A response short
-            -- enough to be a redirect never reaches the cap, so there is no
-            -- redirect hiding behind this.
+            -- reading; anything else is a real failure. A response short enough
+            -- to be a redirect never reaches the cap, so there's no redirect
+            -- hiding behind this.
             if code == "maxbytes" then return table.concat(chunks) end
             return nil, tostring(code)
         end
@@ -340,9 +326,9 @@ local function http_fetch(link, max_bytes)
     return nil, "too many redirects"
 end
 
---- Decides from the body rather than the name.
--- A .m3u can serve a [playlist], and plenty of extensionless endpoints are
--- playlists too - which is the whole reason "unknown" links get probed.
+-- Decided from the body rather than the name: a .m3u can serve a [playlist],
+-- and plenty of extensionless endpoints are playlists too, which is why
+-- "unknown" links get probed at all.
 local function looks_like_playlist(body)
     local head = util.trim(body:sub(1, 512))
     if head == "" then return false end
@@ -354,9 +340,9 @@ local function looks_like_playlist(body)
         or head:sub(1, 8) == "https://"
 end
 
---- Pulls the stream URLs out of a .pls or .m3u body.
--- Entries may be relative to the playlist's own location, so they are resolved
--- here while we still know where the playlist came from.
+-- Pulls the stream URLs out of a .pls or .m3u body. Entries may be relative to
+-- the playlist's own location, so they're resolved here while we still know
+-- where the playlist came from.
 local function parse_playlist(body, base_url)
     local is_pls = util.trim(body):sub(1, 32):lower():find("[playlist]", 1, true) ~= nil
     local urls, seen = {}, {}
@@ -390,10 +376,9 @@ local function parse_playlist(body, base_url)
     return urls
 end
 
---- Unwraps one level of playlist.
--- @return list of stream URLs when `link` turned out to be a playlist;
---         nil when it is already a stream (nothing to do);
---         nil plus an error string when a playlist could not be read.
+-- Unwraps one level of playlist. Returns a list of stream URLs when `link`
+-- turned out to be a playlist, nil when it's already a stream, or nil plus an
+-- error string when a playlist couldn't be read.
 function StationDB.resolve(link)
     local kind = StationDB.link_kind(link)
     if kind == "audio" then return nil end
@@ -401,9 +386,8 @@ function StationDB.resolve(link)
     local named = kind == "playlist"
     local body, err = http_fetch(link, named and 65536 or 2048)
     if not body or body == "" then
-        -- A link that only might have been a playlist is left alone: it is far
-        -- more likely to be a stream that ignored us than a playlist we
-        -- failed to read.
+        -- A link that only might have been a playlist is left alone: far more
+        -- likely a stream that ignored us than a playlist we failed to read.
         if named then return nil, err or "empty response" end
         return nil
     end

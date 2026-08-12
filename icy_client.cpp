@@ -110,9 +110,8 @@ static int tcp_connect(const std::string& host, int port, int timeout_sec) {
     return sock;
 }
 
-// Reads the response head one byte at a time. Slower than block reads, but it
-// stops exactly at the terminator, so no audio is ever swallowed into a buffer
-// the decoder cannot see.
+// One byte at a time. Slower than block reads, but it stops exactly at the
+// terminator, so no audio gets swallowed into a buffer the decoder can't see.
 static bool read_response_head(int sock, std::string& head) {
     head.clear();
     while (head.size() < 16384) {
@@ -274,7 +273,7 @@ std::string icy_extract_title(const char* block) {
 }
 
 // Reads one metadata block. The length byte counts 16-byte units, and is zero
-// on the vast majority of intervals because the title rarely changes.
+// on most intervals since the title rarely changes.
 static bool consume_metadata(IcyStream* s) {
     unsigned char len_byte = 0;
     if (!read_exact(s->fd, &len_byte, 1)) return false;
@@ -296,11 +295,11 @@ ssize_t icy_read(IcyStream* s, void* dst, size_t n) {
     unsigned char* out = (unsigned char*)dst;
     size_t total = 0;
 
-    // Return as soon as any audio is available rather than blocking until the
-    // caller's buffer is full: on a live stream, filling a large buffer would
-    // add seconds of latency. Looping only while total == 0 keeps the timing
-    // behaviour of the original pipe-based reader, while still guaranteeing a
-    // zero return means end of stream and never leaking a metadata block.
+    // Return as soon as any audio is available instead of blocking until the
+    // caller's buffer is full - on a live stream that would add seconds of
+    // latency. Looping only while total == 0 keeps the timing of the old
+    // pipe-based reader, and still means a zero return is end of stream and
+    // never a leaked metadata block.
     while (total == 0) {
         if (s->metaint > 0 && s->bytes_to_meta == 0) {
             if (!consume_metadata(s)) break;

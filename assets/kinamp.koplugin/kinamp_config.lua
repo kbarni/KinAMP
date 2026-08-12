@@ -1,9 +1,7 @@
 local lfs = require("libs/libkoreader-lfs")
 
--- KinAMP lives in /mnt/us/KinAMP on a jailbroken Kindle. Off-device (the
--- KOReader emulator, where the plugin UI is developed) that path does not
--- exist, so fall back to a directory under the KOReader data dir. KINAMP_DIR
--- overrides both.
+-- KinAMP lives in /mnt/us/KinAMP on a jailbroken Kindle. That path doesn't
+-- exist in the KOReader emulator, so fall back to a dir under the data dir.
 local function find_bin_folder()
     local env_dir = os.getenv("KINAMP_DIR")
     if env_dir and env_dir ~= "" then
@@ -14,16 +12,14 @@ local function find_bin_folder()
     end
     local DataStorage = require("datastorage")
     local dir = DataStorage:getDataDir() .. "/kinamp/"
-    lfs.mkdir(dir) -- no-op if it already exists
+    lfs.mkdir(dir)
     return dir
 end
 
 local bin_folder = find_bin_folder()
 
--- Where the player keeps its command FIFO and status file. Deliberately not the
--- install directory: on the device that is /mnt/us, which is vfat and cannot
--- hold a FIFO at all, so the control channel would silently never exist. Must
--- match get_runtime_path() in cli_player.cpp.
+-- Not the install dir: on the device that's /mnt/us, which is vfat and can't
+-- hold a FIFO. Keep in sync with get_runtime_path() in cli_player.cpp.
 local function find_runtime_dir()
     local env_dir = os.getenv("KINAMP_RUNTIME_DIR")
     if env_dir and env_dir ~= "" then
@@ -34,8 +30,8 @@ end
 
 local runtime_dir = find_runtime_dir()
 
--- KINAMP_MUSIC_FOLDER is shared with the GTK player, which uses it as the start
--- folder for its add file/folder dialogs.
+-- KINAMP_MUSIC_FOLDER is shared with the GTK player, which uses it as the
+-- start folder of its add file/folder dialogs.
 local function find_music_dir()
     local env_dir = os.getenv("KINAMP_MUSIC_FOLDER")
     if env_dir and lfs.attributes(env_dir, "mode") == "directory" then
@@ -48,14 +44,11 @@ local function find_music_dir()
 end
 
 return {
-    -- Shown in the About dialog. Kept in step with project(KinAMP VERSION ...)
-    -- in CMakeLists.txt by hand: the plugin ships inside the KinAMP release, so
-    -- the two travel together, but nothing at runtime hands the Lua side the
-    -- number the binaries were built with.
+    -- Bump together with project(KinAMP VERSION ...) in CMakeLists.txt.
     version = "2.9",
     github_url = "https://www.github.com/kbarni/KinAMP",
 
-    -- Path definitions
+    -- Paths
     bin_folder = bin_folder,
     bin_path = bin_folder .. "startkinamp_koreader.sh",
     lib_path = bin_folder .. "libs_hf",
@@ -63,28 +56,26 @@ return {
     radio_file = bin_folder .. ".kinamp_radio.txt",
     playlist_file = bin_folder .. ".kinamp_playlist.m3u",
 
-    -- The bundled station database shipped alongside the binaries (the same
-    -- file radio_cli searches). Several locations are tried at read time, see
-    -- kinamp_stationdb.lua - this is only the first candidate.
+    -- Station dump shipped with the binaries, the same one radio_cli reads.
+    -- First candidate only, see kinamp_stationdb.lua for the rest.
     stations_db = bin_folder .. "allStations.json",
 
-    -- Control channel, created and removed by KinAMP-minimal itself. The FIFO
-    -- doubles as the liveness check: only a running player holds its read end.
+    -- Control channel, created and removed by KinAMP-minimal. The FIFO doubles
+    -- as the liveness check: only a running player holds its read end.
     runtime_dir = runtime_dir,
     cmd_fifo = runtime_dir .. "kinamp_cmd",
     status_file = runtime_dir .. "kinamp_status",
 
-    music_dir = find_music_dir(), -- Default start dir for browser
+    music_dir = find_music_dir(), -- default start dir for the browser
 
-    -- Supported extensions (matched case-insensitively)
+    -- Matched case-insensitively.
     extensions = { "mp3", "flac", "wav", "ogg", "m4a", "m4b", "mp4" },
 
-    -- How long to wait for a freshly launched player to create its FIFO.
-    -- startkinamp_koreader.sh stops any previous instance first, which can take
-    -- a couple of seconds.
+    -- How long to wait for a fresh player to create its FIFO.
+    -- startkinamp_koreader.sh kills the previous instance first, which takes
+    -- a second or two.
     startup_timeout = 6,
 
-    -- Debugging
     debug_mode = true,
     log_file = bin_folder .. "kinamp.log",
 }

@@ -274,8 +274,8 @@ void list_stations() {
     wait_for_enter();
 }
 
-// Fetch at most max_bytes of a URL. Uses fork/exec rather than popen so that
-// station URLs (which come from a downloaded database) are never seen by a shell.
+// Fetch at most max_bytes of a URL. fork/exec rather than popen, so station
+// URLs (which come out of a downloaded database) never reach a shell.
 std::string http_fetch(const std::string& url, size_t max_bytes, int timeout_sec) {
     int pipefd[2];
     if (pipe(pipefd) == -1) return "";
@@ -382,7 +382,7 @@ bool is_unsupported_stream(const std::string& url) {
 }
 
 // Follows .pls/.m3u (and content-sniffed) playlists down to a real stream URL.
-// Returns false if the user cancelled or nothing usable was found.
+// False if the user cancelled or nothing usable turned up.
 bool resolve_playlist_url(Station& station, int depth = 0) {
     const int MAX_DEPTH = 3;
     if (depth >= MAX_DEPTH) return true; // stop unwrapping, use what we have
@@ -392,8 +392,8 @@ bool resolve_playlist_url(Station& station, int depth = 0) {
                        url_has_ext(station.url, ".ogg") || url_has_ext(station.url, ".opus") ||
                        url_has_ext(station.url, ".flac") || url_has_ext(station.url, ".m3u8");
 
-    // Only probe when the name gives us nothing to go on, so we don't pull audio
-    // from every station just to classify it.
+    // Only probe when the name tells us nothing, so we don't pull audio from
+    // every station just to classify it.
     if (!named_playlist && known_audio) return true;
 
     printf("Resolving playlist...\n");
@@ -499,8 +499,8 @@ void add_station() {
 
                 if (!resolve_playlist_url(selected)) continue;
 
-                // Re-check after resolving: a playlist can point at a format
-                // the player cannot decode yet.
+                // Re-check after resolving: a playlist can point at a format the
+                // player can't decode yet.
                 if (is_unsupported_stream(selected.url)) {
                     printf("HLS (.m3u8) streams are not supported yet\n");
                     wait_for_enter();

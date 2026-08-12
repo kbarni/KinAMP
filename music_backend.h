@@ -17,7 +17,7 @@ typedef void (*EosCallback)(void* user_data);
 typedef void (*ErrorCallback)(const char* msg, void* user_data);
 
 // Callback type for ICY (Shoutcast/Icecast) now-playing titles.
-// Invoked on the decoder thread - marshal to the UI thread before touching GTK.
+// Called on the decoder thread - marshal to the UI thread before touching GTK.
 typedef void (*MetadataCallback)(const char* title, void* user_data);
 
 struct Chapter {
@@ -37,7 +37,7 @@ enum class InputType {
     STREAM
 };
 
-// Defined in music_backend.cpp: an opened HTTP stream, transport-agnostic.
+// An opened HTTP stream, whichever transport. Defined in music_backend.cpp.
 struct StreamSource;
 
 // --- Decoder Class ---
@@ -63,11 +63,11 @@ public:
     // Internal use for stream killing
     void set_stream_pid(pid_t pid);
 
-    // Internal use: lets stop() shut down a directly-connected socket so a
-    // blocking read returns at once instead of waiting for the recv timeout.
+    // Internal use: lets stop() shutdown() a directly-connected socket, so a
+    // blocking read returns at once instead of waiting out the recv timeout.
     void set_stream_socket(int fd);
 
-    // Internal use: called from the stream reader when an ICY title arrives.
+    // Internal use: called by the stream reader when an ICY title arrives.
     void emit_metadata(const std::string& raw_title);
 
     void set_volume(double vol);
@@ -97,7 +97,7 @@ private:
     // Decoding Strategies
     void decode_mp4_file(const char* filepath, int start_time);
     void decode_miniaudio(const char* filepath, int start_time); // For files
-    void decode_stream(const char* url); // For HTTP streams: opens, sniffs, dispatches
+    void decode_stream(const char* url); // HTTP streams: open, sniff, dispatch
     void decode_stream_miniaudio(StreamSource* src, const char* url, int out_fd);
     void decode_stream_aac(StreamSource* src, int out_fd); // Raw AAC/ADTS via FAAD2
 

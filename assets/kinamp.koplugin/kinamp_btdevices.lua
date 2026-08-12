@@ -1,19 +1,17 @@
---[[--
-The Bluetooth device list.
-
-The stock interface has a pairing wizard, and it is drawn by pillow - which
-KOReader disables outright while it is in the foreground (koreader.sh sets
-disableEnablePillow), so none of it is reachable from here. This is the
-replacement, and deliberately a smaller thing than the original: it lists the
-devices btfd already knows about and connects to one of them.
-
-Pairing itself is out of scope. It needs confirmation dialogs that only pillow
-provides, so a device has to be paired once from the Kindle's own settings;
-after that it lives in ListPaired forever and this is enough to use it.
-
-The list follows the station list's idiom: the first tap points the buttons at
-a device, a second tap on the same one acts, and holding it skips the pointing.
---]]
+-- The Bluetooth device list.
+--
+-- The stock interface has a pairing wizard, but it's drawn by pillow, which
+-- KOReader disables outright while it's in the foreground (koreader.sh sets
+-- disableEnablePillow), so none of it is reachable from here. This is the
+-- replacement, and a smaller thing than the original: it lists the devices btfd
+-- already knows about and connects to one of them.
+--
+-- Pairing is out of scope. It needs confirmation dialogs that only pillow
+-- provides, so a device has to be paired once from the Kindle's own settings;
+-- after that it lives in ListPaired forever and this is enough to use it.
+--
+-- The list follows the station list: first tap points the buttons at a device,
+-- a second tap on the same one acts, holding it skips the pointing.
 
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
@@ -26,27 +24,25 @@ local T = ffiUtil.template
 local CONNECTED_MARK = "\u{25B6} "  -- the station list marks what is on the air the same way
 local SELECTED_MARK = "\u{2022} "
 
---- Shows a message that goes away on its own.
 local function notify(text, timeout)
     UIManager:show(InfoMessage:new{ text = text, timeout = timeout or 2 })
 end
 
---- Puts a message on screen for the length of an asynchronous operation.
--- Radio transitions and connections take seconds and nothing else on screen
--- moves while they do, so something has to say what is being waited for.
--- @return a function that takes the message back down
+-- Puts a message on screen for the length of an async operation and returns a
+-- function that takes it back down. Radio transitions and connections take
+-- seconds with nothing else moving on screen, so something has to say what is
+-- being waited for.
 local function progress(text)
     local info = InfoMessage:new{ text = text }
     UIManager:show(info)
-    -- Worth showing only if it is painted before the wait, not after it.
+    -- Only worth showing if it's painted before the wait, not after it.
     UIManager:forceRePaint()
     return function() UIManager:close(info) end
 end
 
---- Turns the radio on or off, with the waiting and the reporting.
--- Exported because the player's Bluetooth checkbox is the same operation, and
--- the outcome should read the same from either place.
--- @param done_cb called with the result once the radio has settled
+-- Turns the radio on or off, with the waiting and the reporting. Exported
+-- because the player's Bluetooth checkbox is the same operation and the outcome
+-- should read the same from either place.
 local function toggleRadio(on, done_cb)
     local dismiss = progress(on and _("Turning Bluetooth on…")
                                 or _("Turning Bluetooth off…"))
@@ -71,10 +67,6 @@ local function toggleRadio(on, done_cb)
     end)
 end
 
---=============================================================================
--- The list
---=============================================================================
-
 local BTDevices = ButtonMenu:extend{
     title = _("Bluetooth"),
     -- Which device the bottom buttons act on, if any.
@@ -86,10 +78,9 @@ function BTDevices:init()
     ButtonMenu.init(self)
 end
 
---- Re-reads everything btfd will tell us about the radio and the devices.
 function BTDevices:load()
     self.radio_on = BT.isOn()
-    -- Reading the paired list with the radio down is not known to work on every
+    -- Reading the paired list with the radio down isn't known to work on every
     -- firmware, so an empty answer there is not an error.
     self.devices = BT.getPaired() or {}
     self.connected = BT.getConnectedSet()
@@ -99,7 +90,7 @@ function BTDevices:load()
     end
 end
 
---- Reloads and repaints, unless the list has been closed underneath us: the
+-- Reloads and repaints, unless the list has been closed underneath us: the
 -- connect and radio callbacks land seconds later, by which time the user may
 -- well have dismissed it, and updating a freed widget would take KOReader down.
 function BTDevices:reload(keep_idx)
@@ -155,16 +146,12 @@ function BTDevices:genItemTable()
     return items
 end
 
---- Points the bottom buttons at a device, or at nothing when idx is nil.
+-- Points the bottom buttons at a device, or at nothing when idx is nil.
 function BTDevices:select(idx)
     if idx and (idx < 1 or idx > #self.devices) then idx = nil end
     self.selected_idx = idx
     self:updateList(idx)
 end
-
---=============================================================================
--- Acting on a device
---=============================================================================
 
 function BTDevices:connectDevice(idx)
     local device = self.devices[idx]
@@ -174,8 +161,7 @@ function BTDevices:connectDevice(idx)
     BT.connect(device.mac, function(ok, name)
         dismiss()
         if ok then
-            -- Remembered so that turning the radio back on can go straight to
-            -- it, without asking again.
+            -- Remembered so turning the radio back on can go straight to it.
             BT.setLastDevice(device.mac, device.name)
             notify(T(_("Connected to %1"), name or device.name))
         else
@@ -203,7 +189,6 @@ function BTDevices:disconnectDevice(idx)
     end)
 end
 
---- Connect, or disconnect if that is what the device already is.
 function BTDevices:toggleDevice(idx)
     local device = self.devices[idx]
     if not device then return end
@@ -214,8 +199,8 @@ function BTDevices:toggleDevice(idx)
     end
 end
 
---- First tap selects, a second one on the same device connects it.
--- KOReader has no double-tap on menu items, and this is as close as it gets.
+-- First tap selects, a second one on the same device connects it. KOReader has
+-- no double-tap on menu items and this is as close as it gets.
 function BTDevices:onMenuSelect(item)
     if not item.device then return true end
     if self.selected_idx == item.idx then
@@ -231,17 +216,12 @@ function BTDevices:onMenuHold(item)
     return true
 end
 
---=============================================================================
--- The button row
---=============================================================================
-
 function BTDevices:genButtons()
     local function selected() return self.devices[self.selected_idx] end
 
     -- Connect and Disconnect are two buttons rather than one that changes its
-    -- label: Button only reads text_func when it is built, while enabled_func
-    -- is re-checked on every paint, so this is the pair that actually keeps up
-    -- with the list.
+    -- label: Button only reads text_func when it's built, while enabled_func is
+    -- re-checked on every paint, so this is the pair that keeps up with the list.
     return {
         {
             {
@@ -285,12 +265,7 @@ function BTDevices:setRadio(on)
     end)
 end
 
---=============================================================================
--- Entry point
---=============================================================================
-
---- Opens the device list.
--- @param opts.on_close called once the list is dismissed
+-- opts.on_close is called once the list is dismissed.
 function BTDevices.open(opts)
     opts = opts or {}
     local menu
@@ -301,7 +276,7 @@ function BTDevices.open(opts)
     return menu
 end
 
---- The radio toggle on its own, for the player's Bluetooth checkbox.
+-- The radio toggle on its own, for the player's Bluetooth checkbox.
 BTDevices.toggleRadio = toggleRadio
 
 return BTDevices

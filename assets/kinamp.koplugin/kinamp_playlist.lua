@@ -1,18 +1,16 @@
---[[--
-Playlist manager.
-
-The queue the KinAMP players read from `.kinamp_playlist.m3u`, editable in
-place: tap a track to play it, hold one for the things you can do to it, and the
-buttons along the bottom fill, empty and store the list. It is the playlist view
-the player widget opens, so the same window both shows the queue and edits it -
-the KOReader-side counterpart of the GTK player's playlist pane.
-
-Edits are written to the playlist file straight away, but a *playing* daemon is
-left alone: the player's only way to take a new list is the `load` command,
-which stops playback (see cli_player.cpp). So a queue edited mid-track applies
-from the next time playback is started - which is what tapping a track here
-does.
---]]
+-- Playlist manager.
+--
+-- The queue the KinAMP players read from .kinamp_playlist.m3u, editable in
+-- place: tap a track to play it, hold one for the things you can do to it, and
+-- the buttons along the bottom fill, empty and store the list. The player
+-- widget opens this, so the same window both shows the queue and edits it - the
+-- KOReader-side counterpart of the GTK player's playlist pane.
+--
+-- Edits are written to the playlist file straight away, but a *playing* daemon
+-- is left alone: the player's only way to take a new list is the `load`
+-- command, which stops playback (see cli_player.cpp). So a queue edited
+-- mid-track applies from the next time playback starts, which is what tapping a
+-- track here does.
 
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -30,7 +28,6 @@ local T = ffiUtil.template
 
 local PLAYING_MARK = "\u{25B6} "  -- the player widget marks the current track the same way
 
---- Shows a message that goes away on its own.
 local function notify(text, timeout)
     UIManager:show(InfoMessage:new{ text = text, timeout = timeout or 2 })
 end
@@ -44,14 +41,10 @@ local function is_m3u(filename)
     return name:match("%.m3u$") ~= nil or name:match("%.m3u8$") ~= nil
 end
 
---=============================================================================
--- The list
---=============================================================================
-
 local PlaylistManager = ButtonMenu:extend{
     title = _("Playlist"),
-    -- Where the file and folder choosers open. Remembered per instance, so
-    -- adding a second album does not start back at the top.
+    -- Where the file and folder choosers open. Per instance, so adding a second
+    -- album doesn't start back at the top.
     last_dir = nil,
 }
 
@@ -68,8 +61,8 @@ end
 
 function PlaylistManager:genItemTable()
     local items = {}
-    -- Marking the track that is playing makes the list double as a "where am I
-    -- in the album" view, which is half of what it gets opened for.
+    -- Marking the playing track makes the list double as a "where am I in the
+    -- album" view, which is half of what it gets opened for.
     local status = Backend.get_status()
     local playing = status and not status.is_radio and status.index or nil
 
@@ -90,7 +83,6 @@ function PlaylistManager:genItemTable()
     return items
 end
 
---- Writes the queue back and redraws.
 function PlaylistManager:savePlaylist(keep_idx)
     if not Backend.save_internal_playlist(self.playlist) then
         notify(_("Could not save the playlist."), 3)
@@ -100,18 +92,14 @@ function PlaylistManager:savePlaylist(keep_idx)
     return true
 end
 
---=============================================================================
--- Playing
---=============================================================================
-
 function PlaylistManager:playIndex(idx)
-    -- Hands the queue over as well: it is already on disk, but a player that
-    -- is running has whatever list it last loaded, which is not this one if it
-    -- has just been edited.
+    -- Hands the queue over as well: it's already on disk, but a running player
+    -- has whatever list it last loaded, which isn't this one if it has just
+    -- been edited.
     local sent = Backend.play_from_index(idx, self.playlist)
     notify(T(_("Playing: %1"), basename(self.playlist[idx])))
     if not sent then
-        -- Nothing was listening, so a player is starting up: say so if it never
+        -- Nothing was listening, so a player is starting up. Say so if it never
         -- answers, rather than leaving the user with a silent device.
         Backend.wait_until_running(function(ok)
             if not ok then
@@ -126,10 +114,6 @@ function PlaylistManager:onMenuSelect(item)
     if item.pl_idx then self:playIndex(item.pl_idx) end
     return true
 end
-
---=============================================================================
--- Per-track actions
---=============================================================================
 
 function PlaylistManager:onMenuHold(item)
     if not item.pl_idx then return true end
@@ -191,10 +175,6 @@ function PlaylistManager:removeTrack(idx)
     end
 end
 
---=============================================================================
--- The button row
---=============================================================================
-
 function PlaylistManager:genButtons()
     return {
         {
@@ -224,7 +204,6 @@ function PlaylistManager:genButtons()
     }
 end
 
---- Appends paths to the queue and saves.
 function PlaylistManager:addPaths(paths)
     local first_added = #self.playlist + 1
     for _i, path in ipairs(paths) do
@@ -235,10 +214,9 @@ function PlaylistManager:addPaths(paths)
     end
 end
 
---- Adds one file at a time, keeping the chooser open.
--- PathChooser confirms a single file, and picking a whole album one tap at a
--- time through a chooser that closes after each one is not worth doing - so it
--- reopens itself where it left off until dismissed.
+-- One file at a time, keeping the chooser open. PathChooser confirms a single
+-- file, and picking a whole album through a chooser that closes after each tap
+-- is no fun, so it reopens itself where it left off until dismissed.
 function PlaylistManager:addFiles()
     local chooser
     chooser = PathChooser:new{
@@ -253,8 +231,8 @@ function PlaylistManager:addFiles()
             self.playlist[#self.playlist + 1] = path
             if self:savePlaylist(#self.playlist) then
                 notify(T(_("Added: %1"), basename(path)))
-                -- PathChooser closes itself once this returns, so the next one
-                -- is opened after that rather than underneath it.
+                -- PathChooser closes itself once this returns, so open the next
+                -- one after that rather than underneath it.
                 UIManager:nextTick(function() self:addFiles() end)
             end
         end,
@@ -298,10 +276,6 @@ function PlaylistManager:confirmClear()
     })
 end
 
---=============================================================================
--- Storing and recalling playlists
---=============================================================================
-
 function PlaylistManager:saveAs()
     if #self.playlist == 0 then
         notify(_("There is nothing to save."))
@@ -338,7 +312,7 @@ end
 
 function PlaylistManager:writePlaylistFile(name)
     -- A name is a name, not a path: a stray slash would silently write into
-    -- some other directory, or fail on one that does not exist.
+    -- some other directory, or fail on one that doesn't exist.
     name = (name or ""):gsub("[/\r\n]", " "):gsub("^%s+", ""):gsub("%s+$", "")
     if name == "" then return end
     if not is_m3u(name) then name = name .. ".m3u" end
@@ -363,10 +337,9 @@ function PlaylistManager:writePlaylistFile(name)
     end
 end
 
---- Replaces the queue with an m3u from disk.
--- Replaces rather than appends: the players keep exactly one queue, so loading
--- a playlist is how you switch to it. Anything worth keeping can be saved
--- first with the button next to this one.
+-- Replaces the queue rather than appending to it: the players keep exactly one
+-- queue, so loading a playlist is how you switch to it. Anything worth keeping
+-- can be saved first with the button next to this one.
 function PlaylistManager:loadPlaylist()
     UIManager:show(PathChooser:new{
         title = _("Long-press a playlist to load it"),
@@ -390,13 +363,8 @@ function PlaylistManager:loadPlaylist()
     })
 end
 
---=============================================================================
--- Entry point
---=============================================================================
-
---- Opens the manager.
--- @param opts.on_close called once the list is dismissed, so a caller that
---                      shows playback state can pick up whatever changed
+-- opts.on_close is called once the list is dismissed, so a caller showing
+-- playback state can pick up whatever changed.
 function PlaylistManager.open(opts)
     opts = opts or {}
     local menu

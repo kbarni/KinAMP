@@ -28,8 +28,8 @@ extern "C" {
 
 // --- GStreamer 0.10 / 1.0 compatibility ---
 // KINAMP_GST_API is set by CMake from whichever GStreamer it found: 0 for the
-// Kindle's 0.10, 1 for a desktop 1.0. Only three things actually differ for us:
-// the raw-audio caps name, the sink element, and the duration query signature.
+// Kindle's 0.10, 1 for a desktop 1.0. Only three things differ for us: the
+// raw-audio caps name, the sink element, and the duration query signature.
 #ifndef KINAMP_GST_API
 #  define KINAMP_GST_API 0
 #endif
@@ -81,8 +81,8 @@ const char* PIPE_PATH = "/tmp/kinamp_audio_pipe";
 // How much of a stream may be buffered for format sniffing before decoding.
 #define STREAM_PEEK_MAX 8192
 
-// The GStreamer pipeline caps are fixed when playback starts, and play_file()
-// pins streams to this rate, so every stream decoder must output it.
+// The pipeline caps are fixed when playback starts and play_file() pins streams
+// to this rate, so every stream decoder has to output it.
 static const int STREAM_OUTPUT_RATE = 44100;
 static const int STREAM_OUTPUT_CHANNELS = 2;
 
@@ -126,13 +126,13 @@ static AudioFormat detect_format_helper(const char* resource, InputType type) {
 //
 // Plain http:// is opened directly (see icy_client) so the response headers are
 // visible and ICY now-playing titles can be stripped out of the audio. https://
-// falls back to wrapping wget, since no TLS library is linked; those streams
-// simply carry no metadata.
+// falls back to wrapping wget, as no TLS library is linked - those streams carry
+// no metadata.
 // =================================================================================
 
-// A stream is opened once, up front, so the format can be sniffed from the
-// response before deciding which decoder to hand it to. Both transports (direct
-// socket and wget pipe) look the same to the reader.
+// Opened once, up front, so the format can be sniffed from the response before
+// picking a decoder. Both transports (direct socket, wget pipe) look the same
+// to the reader.
 struct StreamSource {
     int fd;
     pid_t pid;          // wget child, 0 when connected directly
@@ -164,8 +164,8 @@ static void stream_source_init(StreamSource* src) {
 static bool stream_source_open(StreamSource* src, const char* url, Decoder* decoder) {
     stream_source_init(src);
 
-    // Plain HTTP: connect directly so the response headers (and with them
-    // icy-metaint and content-type) are visible. wget would hide them.
+    // Plain HTTP: connect directly so the response headers (icy-metaint,
+    // content-type) are visible. wget hides them.
     if (strncmp(url, "http://", 7) == 0) {
         src->icy.on_title = icy_title_trampoline;
         src->icy.user_data = decoder;
@@ -230,7 +230,7 @@ static bool stream_source_open(StreamSource* src, const char* url, Decoder* deco
 
 static void stream_source_close(StreamSource* src, Decoder* decoder) {
     if (src->use_icy) {
-        // Unregister before closing so stop() can never shutdown() a stale fd.
+        // Unregister before closing, or stop() could shutdown() a stale fd.
         if (decoder) decoder->set_stream_socket(-1);
         src->use_icy = false;
     }
@@ -249,7 +249,7 @@ static void stream_source_close(StreamSource* src, Decoder* decoder) {
     }
 }
 
-// Reads audio only: any interleaved ICY metadata is consumed on the way past.
+// Audio only: interleaved ICY metadata is consumed on the way past.
 static ssize_t stream_source_read(StreamSource* src, void* dst, size_t n) {
     if (n == 0) return 0;
 
@@ -330,7 +330,7 @@ static AudioFormat sniff_stream_format(StreamSource* src, const char* url) {
 // ---------------------------------------------------------------- miniaudio VFS
 
 // The stream is already open by the time miniaudio asks for it, so the VFS just
-// wraps the live StreamSource rather than opening anything itself.
+// wraps the live StreamSource instead of opening anything.
 struct StreamVFS {
     ma_vfs_callbacks cb;
     StreamSource* src;
@@ -453,8 +453,8 @@ void Decoder::set_stream_socket(int fd) {
 }
 
 void Decoder::emit_metadata(const std::string& raw_title) {
-    // ICY declares no encoding; it is UTF-8 or Latin-1 in practice. Invalid
-    // UTF-8 makes GTK labels render empty, so convert before handing it up.
+    // ICY declares no encoding; in practice it's UTF-8 or Latin-1. Invalid UTF-8
+    // makes GTK labels render empty, so convert before handing it up.
     std::string title = raw_title;
     if (!g_utf8_validate(title.c_str(), -1, NULL)) {
         gchar* converted = g_convert(title.c_str(), -1, "UTF-8", "ISO-8859-1", NULL, NULL, NULL);
@@ -484,9 +484,9 @@ void Decoder::stop() {
         if (current_stream_pid > 0) {
             kill(current_stream_pid, SIGTERM);
         }
-        // A directly-connected socket has no process to kill; shutting it down
-        // makes the blocking read return immediately instead of waiting out
-        // the receive timeout.
+        // A directly-connected socket has no process to kill. shutdown() makes
+        // the blocking read return at once instead of waiting out the receive
+        // timeout.
         if (current_stream_fd >= 0) {
             shutdown(current_stream_fd, SHUT_RDWR);
         }
@@ -768,8 +768,8 @@ void Decoder::decode_stream_miniaudio(StreamSource* src, const char* url, int ou
     vfs.cb.onInfo = StreamVFS_onInfo;
     vfs.src = src;
 
-    // Ask for the pipeline's rate rather than the stream's: the caps are already
-    // fixed, so a 48 kHz stream would otherwise play at the wrong pitch.
+    // The pipeline's rate, not the stream's: the caps are already fixed, so a
+    // 48 kHz stream would play at the wrong pitch.
     ma_decoder_config decoder_config =
         ma_decoder_config_init(ma_format_s16, STREAM_OUTPUT_CHANNELS, STREAM_OUTPUT_RATE);
     ma_decoder decoder;
@@ -830,8 +830,8 @@ void Decoder::decode_stream_miniaudio(StreamSource* src, const char* url, int ou
 }
 
 // Raw AAC in ADTS framing, as served by Shoutcast/Icecast AAC and AAC+ stations.
-// FAAD2 handles this via NeAACDecInit (which syncs to an ADTS header), unlike the
-// M4A/M4B path which feeds it an AudioSpecificConfig from the MP4 container.
+// FAAD2 takes this through NeAACDecInit, which syncs to an ADTS header. The
+// M4A/M4B path instead feeds it an AudioSpecificConfig from the MP4 container.
 void Decoder::decode_stream_aac(StreamSource* src, int out_fd) {
     NeAACDecHandle hDecoder = NeAACDecOpen();
     if (!hDecoder) {
@@ -862,9 +862,9 @@ void Decoder::decode_stream_aac(StreamSource* src, int out_fd) {
         return;
     }
 
-    // A live stream is joined mid-frame, so align to a real frame boundary
-    // first. NeAACDecInit does not search for one: given unaligned data it
-    // reports 44100 Hz stereo defaults and then fails on every frame.
+    // We join a live stream mid-frame, so align to a real frame boundary first.
+    // NeAACDecInit doesn't search for one: given unaligned data it reports
+    // 44100 Hz stereo defaults and then fails on every frame.
     long sync = adts_find_sync(buf.data(), len);
     if (sync < 0) {
         g_printerr("Decoder: No ADTS sync found in stream\n");
@@ -896,7 +896,7 @@ void Decoder::decode_stream_aac(StreamSource* src, int out_fd) {
 
     // With SBR (HE-AAC) the decoded rate is double the core rate, and with
     // Parametric Stereo a mono core decodes to stereo. Neither is known until a
-    // frame comes out, so the converters are set up from the first good frame.
+    // frame comes out, so set the converters up from the first good one.
     ma_resampler resampler;
     bool have_resampler = false;
     unsigned long out_rate_in = 0;
@@ -926,8 +926,8 @@ void Decoder::decode_stream_aac(StreamSource* src, int out_fd) {
         if (frameInfo.error > 0) {
             g_printerr("Decoder: FAAD Warning: %s\n", NeAACDecGetErrorMessage(frameInfo.error));
 
-            // Jump to the next frame boundary rather than giving up: a dropped
-            // packet should not end the station. Searching for the next sync
+            // Jump to the next frame boundary instead of giving up - a dropped
+            // packet shouldn't end the station. Searching for the next sync
             // beats stepping a byte at a time through a corrupt frame.
             size_t advance;
             long next = (len > 1) ? adts_find_sync(buf.data() + 1, len - 1) : -1;
@@ -1231,8 +1231,8 @@ void MusicBackend::read_metadata(const char* filepath) {
         mp4config.verbose.tags = 0;
     } else if (format == AudioFormat::MINIAUDIO) {
         // miniaudio has no tag API, so ID3 and Vorbis comments are parsed
-        // separately. Missing tags stay empty and the UI falls back to the
-        // file name.
+        // separately. Missing tags stay empty and the UI falls back to the file
+        // name.
         AudioTags tags;
         if (read_audio_tags(filepath, &tags)) {
             meta_title = tags.title;
