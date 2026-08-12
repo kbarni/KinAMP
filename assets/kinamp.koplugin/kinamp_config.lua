@@ -56,6 +56,11 @@ return {
     radio_file = bin_folder .. ".kinamp_radio.txt",
     playlist_file = bin_folder .. ".kinamp_playlist.m3u",
 
+    -- The bundled station database shipped alongside the binaries (the same
+    -- file radio_cli searches). Several locations are tried at read time, see
+    -- kinamp_stationdb.lua - this is only the first candidate.
+    stations_db = bin_folder .. "allStations.json",
+
     -- Control channel, created and removed by KinAMP-minimal itself. The FIFO
     -- doubles as the liveness check: only a running player holds its read end.
     runtime_dir = runtime_dir,

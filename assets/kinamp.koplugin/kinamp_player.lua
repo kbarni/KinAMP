@@ -25,7 +25,6 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local IconButton = require("ui/widget/iconbutton")
 local IconWidget = require("ui/widget/iconwidget")
 local ImageWidget = require("ui/widget/imagewidget")
-local Menu = require("ui/widget/menu")
 local MovableContainer = require("ui/widget/container/movablecontainer")
 local ProgressWidget = require("ui/widget/progresswidget")
 local Size = require("ui/size")
@@ -136,6 +135,9 @@ function KinAMPPlayer:init()
         align = "center",
         title = _("KinAMP"),
         with_bottom_line = true,
+        -- Everything that has no button of its own lives behind this.
+        left_icon = "appbar.menu",
+        left_icon_tap_callback = function() self:showMenu() end,
         close_callback = function() self:onClose() end,
         show_parent = self,
     }
@@ -579,57 +581,98 @@ function KinAMPPlayer:onPrevious()
     self:actAndRefresh(function() Backend.previous_track() end)
 end
 
-function KinAMPPlayer:showPlaylist()
-    local playlist = Backend.load_internal_playlist()
-    local status = Backend.get_status()
-    local items = {}
-
-    for idx, path in ipairs(playlist) do
-        local name = path:match("([^/]+)$") or path
-        local marker = (status and status.index == idx) and "\u{25B6} " or ""
-        table.insert(items, {
-            text = string.format("%s%d. %s", marker, idx, name),
-            callback = function()
-                self:actAndRefresh(function() Backend.play_from_index(idx) end)
-            end,
-        })
-    end
-    if #items == 0 then
-        table.insert(items, { text = _("(Empty - add folders from the KinAMP menu)") })
-    end
-
-    self:showList(_("Playlist"), items)
-end
-
-function KinAMPPlayer:showStations()
-    local items = {}
-    for _idx, station in ipairs(Backend.get_stations()) do
-        table.insert(items, {
-            text = station.name,
-            callback = function()
-                self:actAndRefresh(function() Backend.play_radio(station.url) end)
-            end,
-        })
-    end
-    if #items == 0 then
-        table.insert(items, { text = _("No stations found") })
+--- What the buttons around the cover cannot say: how the queue is played, and
+-- how to stop or get rid of the player.
+--
+-- Stop and quit are different requests and both are worth having. Stopping
+-- leaves the daemon resident, costing nothing while idle (it sits in poll() on
+-- the command FIFO) and starting the next track instantly; quitting reclaims
+-- the several megabytes of resident GStreamer, at the price of a couple of
+-- seconds the next time something plays.
+function KinAMPPlayer:showMenu()
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local InfoMessage = require("ui/widget/infomessage")
+    local dialog
+    local function act(fn)
+        return function()
+            UIManager:close(dialog)
+            fn()
+        end
     end
 
-    self:showList(_("Radio Stations"), items)
-end
+    -- Read once, when the dialog is built: the checkmarks are drawn from it and
+    -- picking one closes the dialog, so it never has to be kept up to date.
+    local strategy = Backend.get_strategy()
+    local function strategy_button(text, value)
+        return {
+            text = text,
+            checked_func = function() return strategy == value end,
+            callback = act(function()
+                Backend.set_strategy(value)
+                UIManager:show(InfoMessage:new{ text = text, timeout = 2 })
+            end),
+        }
+    end
 
-function KinAMPPlayer:showList(title, items)
-    local menu
-    menu = Menu:new{
-        title = title,
-        item_table = items,
-        is_popout = true,
-        is_borderless = false,
-        width = math.floor(Screen:getWidth() * 0.9),
-        height = math.floor(Screen:getHeight() * 0.8),
-        close_callback = function() UIManager:close(menu) end,
+    dialog = ButtonDialog:new{
+        title = _("KinAMP"),
+        title_align = "center",
+        buttons = {
+            {
+                -- Matches the player's own enum: 0 normal, 1 repeat, 2 random.
+                strategy_button(_("In order"), 0),
+                strategy_button(_("Repeat"), 1),
+                strategy_button(_("Shuffle"), 2),
+            },
+            {
+                {
+                    text = _("Stop playback"),
+                    callback = act(function()
+                        self:actAndRefresh(function() Backend.stop() end)
+                    end),
+                },
+            },
+            {
+                {
+                    text = _("Quit player"),
+                    callback = act(function()
+                        local was_running = Backend.quit()
+                        UIManager:show(InfoMessage:new{
+                            text = was_running and _("Player closed")
+                                                or _("Player is not running"),
+                            timeout = 2,
+                        })
+                        self:actAndRefresh(function() end)
+                    end),
+                },
+            },
+        },
     }
-    UIManager:show(menu)
+    UIManager:show(dialog)
+end
+
+--- Opens the queue, which is also where it is edited: tracks are added,
+-- reordered and removed there, and it plays what you tap and closes on its way
+-- out, so all that is left for us is to pick up whatever it started.
+function KinAMPPlayer:showPlaylist()
+    local PlaylistManager = require("kinamp_playlist")
+    PlaylistManager.open{
+        on_close = function()
+            self:refresh(true)
+        end,
+    }
+end
+
+--- Opens the station list, which is also where stations are added and removed.
+-- It plays the station itself and closes on its way out, so all that is left
+-- for us is to pick up whatever it started.
+function KinAMPPlayer:showStations()
+    local StationManager = require("kinamp_stations")
+    StationManager.open{
+        on_close = function()
+            self:refresh(true)
+        end,
+    }
 end
 
 --=============================================================================

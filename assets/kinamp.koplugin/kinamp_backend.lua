@@ -82,6 +82,44 @@ local function each_line(content)
 end
 
 --=============================================================================
+-- .kinamp.conf
+--
+-- The players' shared settings file. KinAMP-minimal reads it at startup and
+-- writes only current_index back, so this is how a setting reaches a player
+-- that is not running yet - and how one survives the player exiting.
+--=============================================================================
+
+--- Sets one numeric key, leaving the rest of the file alone.
+local function write_config(key, value)
+    local content = read_file(Config.conf_file) or ""
+    local entry = key .. "=" .. tostring(value)
+
+    if content:match(key .. "=%-?%d+") then
+        content = content:gsub(key .. "=%-?%d+", entry)
+    else
+        -- Exactly one newline before the new entry, whether or not the file
+        -- ended with one - the GTK player reads this file too.
+        content = (content ~= "" and (content:gsub("\n+$", "") .. "\n") or "") .. entry .. "\n"
+    end
+
+    local f = io.open(Config.conf_file, "w")
+    if not f then
+        Backend.log("Error writing config: " .. Config.conf_file)
+        return false
+    end
+    f:write(content)
+    f:close()
+    Backend.log("Updated config: " .. entry)
+    return true
+end
+
+local function read_config(key)
+    local content = read_file(Config.conf_file)
+    if not content then return nil end
+    return tonumber(content:match(key .. "=(%-?%d+)"))
+end
+
+--=============================================================================
 -- Control channel
 --=============================================================================
 
@@ -250,9 +288,21 @@ function Backend.set_volume(percent)
     return Backend.send(string.format("vol %d", percent))
 end
 
---- @param strategy 0 normal, 1 repeat, 2 shuffle
+--- @param strategy 0 in order, 1 repeat all, 2 shuffle
+-- Stored as well as sent: the player takes the command straight away but never
+-- writes the setting back, so without this the choice would be forgotten the
+-- next time the daemon is started - and would not reach one that is not up.
 function Backend.set_strategy(strategy)
+    write_config("playback_strategy", strategy)
     return Backend.send(string.format("strategy %d", strategy))
+end
+
+--- The strategy in force: what the running player reports, or failing that
+-- what the next one will read out of the config.
+function Backend.get_strategy()
+    local status = Backend.get_status()
+    if status and status.strategy then return status.strategy end
+    return read_config("playback_strategy") or 0
 end
 
 --=============================================================================
@@ -278,6 +328,30 @@ function Backend.get_stations()
     return stations
 end
 
+--- Writes the station list back, replacing whatever was there.
+-- The file is one "name|url" record per line and has no quoting of any kind
+-- (see load_radio_stations() in cli_player.cpp), so a name carrying a
+-- separator or a newline would silently become a different station - or two.
+-- Neither is worth rejecting an otherwise fine station over, so they are
+-- flattened instead.
+function Backend.save_stations(stations)
+    local f = io.open(Config.radio_file, "w")
+    if not f then
+        Backend.log("Error: cannot write station file " .. Config.radio_file)
+        return false
+    end
+    for _, s in ipairs(stations) do
+        local name = tostring(s.name or ""):gsub("[|\r\n]", " ")
+        local url = tostring(s.url or ""):gsub("%s+", "")
+        if name ~= "" and url ~= "" then
+            f:write(name .. "|" .. url .. "\n")
+        end
+    end
+    f:close()
+    Backend.log(string.format("Saved %d stations to %s", #stations, Config.radio_file))
+    return true
+end
+
 -- Load Internal Playlist
 function Backend.load_internal_playlist()
     local items = {}
@@ -292,47 +366,41 @@ function Backend.load_internal_playlist()
     return items
 end
 
+--- Writes a list of paths as a playlist file.
+-- Deliberately a bare list of paths rather than an #EXTM3U: that is what the
+-- player reads back (load_playlist in cli_player.cpp skips # lines anyway) and
+-- what every other m3u reader accepts.
+function Backend.write_m3u(path, items)
+    local f = io.open(path, "w")
+    if not f then
+        Backend.log("Error: cannot write playlist " .. tostring(path))
+        return false
+    end
+    for _, entry in ipairs(items) do
+        f:write(entry .. "\n")
+    end
+    f:close()
+    Backend.log(string.format("Wrote %d entries to %s", #items, tostring(path)))
+    return true
+end
+
 -- Helper to save internal playlist
 function Backend.save_internal_playlist(items)
     Backend.log("Saving internal queue to " .. Config.playlist_file)
-    local f = io.open(Config.playlist_file, "w")
-    if not f then
-        Backend.log("Error: Cannot write to playlist file")
-        return false
-    end
-    for _, path in ipairs(items) do
-        f:write(path .. "\n")
-    end
-    f:close()
-    return true
+    return Backend.write_m3u(Config.playlist_file, items)
+end
+
+--- True if the name ends in one of the extensions the player can decode.
+function Backend.is_playable(name)
+    local ext = tostring(name):match("%.([^.]+)$")
+    return ext ~= nil and known_ext[ext:lower()] == true
 end
 
 --- Sets current_index in .kinamp.conf.
 -- Only needed to pick the starting track for a player that is not running yet;
 -- once it is up, the player maintains this itself.
 function Backend.update_config(index)
-    local content = ""
-    local f = io.open(Config.conf_file, "r")
-    if f then
-        content = f:read("*a")
-        f:close()
-    end
-
-    if content:match("current_index=%-?%d+") then
-        content = content:gsub("current_index=%-?%d+", "current_index=" .. tostring(index))
-    else
-        content = content .. "\ncurrent_index=" .. tostring(index) .. "\n"
-    end
-
-    f = io.open(Config.conf_file, "w")
-    if f then
-        f:write(content)
-        f:close()
-        Backend.log("Updated config: current_index=" .. tostring(index))
-        return true
-    end
-    Backend.log("Error writing config: " .. Config.conf_file)
-    return false
+    return write_config("current_index", index)
 end
 
 --=============================================================================
@@ -424,8 +492,7 @@ function Backend.scan_folder(path)
     end
 
     for name in iter, dir_obj do
-        local ext = name:match("%.([^.]+)$")
-        if ext and known_ext[ext:lower()] then
+        if Backend.is_playable(name) then
             local full_path = path .. "/" .. name
             if lfs.attributes(full_path, "mode") == "file" then
                 table.insert(files, full_path)
