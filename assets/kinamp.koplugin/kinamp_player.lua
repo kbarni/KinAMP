@@ -581,8 +581,8 @@ function KinAMPPlayer:onPrevious()
     self:actAndRefresh(function() Backend.previous_track() end)
 end
 
---- What the buttons around the cover cannot say: how the queue is played, and
--- how to stop or get rid of the player.
+--- What the buttons around the cover cannot say: how the queue is played, where
+-- the sound comes out, and how to stop or get rid of the player.
 --
 -- Stop and quit are different requests and both are worth having. Stopping
 -- leaves the daemon resident, costing nothing while idle (it sits in poll() on
@@ -614,39 +614,69 @@ function KinAMPPlayer:showMenu()
         }
     end
 
+    local buttons = {
+        {
+            -- Matches the player's own enum: 0 normal, 1 repeat, 2 random.
+            strategy_button(_("In order"), 0),
+            strategy_button(_("Repeat"), 1),
+            strategy_button(_("Shuffle"), 2),
+        },
+    }
+
+    -- Bluetooth, only where there is a btfd that answers: not in the emulator,
+    -- and not on the newer Kindles whose radio is driven by something else
+    -- entirely. Better no entry at all than a dead one.
+    --
+    -- The state is read once, when the dialog is built, exactly like the
+    -- strategy above: tapping the checkbox closes the dialog, so it never has
+    -- to be kept up to date - and it must not be re-read while the radio is
+    -- still coming up, which takes seconds and would flip the mark back.
+    local BT = require("kinamp_bt")
+    if BT.available() then
+        local bt_on = BT.isOn()
+        local BTDevices = require("kinamp_btdevices")
+        buttons[#buttons + 1] = {
+            {
+                text = _("Bluetooth"),
+                checked_func = function() return bt_on end,
+                callback = act(function() BTDevices.toggleRadio(not bt_on) end),
+            },
+        }
+        buttons[#buttons + 1] = {
+            {
+                text = _("Bluetooth devices"),
+                callback = act(function() BTDevices.open() end),
+            },
+        }
+    end
+
+    buttons[#buttons + 1] = {
+        {
+            text = _("Stop playback"),
+            callback = act(function()
+                self:actAndRefresh(function() Backend.stop() end)
+            end),
+        },
+    }
+    buttons[#buttons + 1] = {
+        {
+            text = _("Quit player"),
+            callback = act(function()
+                local was_running = Backend.quit()
+                UIManager:show(InfoMessage:new{
+                    text = was_running and _("Player closed")
+                                        or _("Player is not running"),
+                    timeout = 2,
+                })
+                self:actAndRefresh(function() end)
+            end),
+        },
+    }
+
     dialog = ButtonDialog:new{
         title = _("KinAMP"),
         title_align = "center",
-        buttons = {
-            {
-                -- Matches the player's own enum: 0 normal, 1 repeat, 2 random.
-                strategy_button(_("In order"), 0),
-                strategy_button(_("Repeat"), 1),
-                strategy_button(_("Shuffle"), 2),
-            },
-            {
-                {
-                    text = _("Stop playback"),
-                    callback = act(function()
-                        self:actAndRefresh(function() Backend.stop() end)
-                    end),
-                },
-            },
-            {
-                {
-                    text = _("Quit player"),
-                    callback = act(function()
-                        local was_running = Backend.quit()
-                        UIManager:show(InfoMessage:new{
-                            text = was_running and _("Player closed")
-                                                or _("Player is not running"),
-                            timeout = 2,
-                        })
-                        self:actAndRefresh(function() end)
-                    end),
-                },
-            },
-        },
+        buttons = buttons,
     }
     UIManager:show(dialog)
 end

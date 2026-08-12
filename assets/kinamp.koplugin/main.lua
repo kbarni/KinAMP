@@ -78,16 +78,32 @@ function KinAMP:quitIdlePlayer()
     Backend.quit()
 end
 
+--- Drops our lipc handle, if the Bluetooth menu ever opened one.
+--
+-- Only the handle: the Bluetooth state itself is deliberately left as it is.
+-- The radio is the device's, not ours, and ensureBTconnection belongs to
+-- whoever is playing - KinAMP-minimal raises it for its own lifetime and lowers
+-- it when it exits, which is exactly the process that outlives us here.
+function KinAMP:closeBluetooth()
+    pcall(function() require("kinamp_bt").close() end)
+end
+
+--- Everything that has to happen on the way out, whichever way that is.
+function KinAMP:leaving()
+    self:quitIdlePlayer()
+    self:closeBluetooth()
+end
+
 --- Exit from the menu, or the Dispatcher exit action.
 -- Broadcast before anything is torn down, which is the tidiest moment to write
 -- to the FIFO.
 function KinAMP:onExit()
-    self:quitIdlePlayer()
+    self:leaving()
 end
 
 --- Power off and reboot: those broadcast Close rather than Exit.
 function KinAMP:onClose()
-    self:quitIdlePlayer()
+    self:leaving()
 end
 
 --- The catch-all, because not every way out of KOReader announces itself:
@@ -101,7 +117,7 @@ end
 -- tells the two apart.
 function KinAMP:onCloseWidget()
     if self.ui and self.ui.tearing_down then return end
-    self:quitIdlePlayer()
+    self:leaving()
 end
 
 function KinAMP:addToMainMenu(menu_items)
