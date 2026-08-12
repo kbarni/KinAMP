@@ -1,6 +1,7 @@
 //#include "assets/title.h"
 //#include "assets/title-lr.h"
-#include "assets/title_fire.h"
+//#include "assets/title_fire.h"
+#include "assets/title_alf.h"
 #include "assets/title_fire-lr.h"
 #include "assets/bluetooth_icon.h"
 #include "assets/close_icon.h"
