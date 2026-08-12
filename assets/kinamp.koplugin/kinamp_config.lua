@@ -48,6 +48,13 @@ local function find_music_dir()
 end
 
 return {
+    -- Shown in the About dialog. Kept in step with project(KinAMP VERSION ...)
+    -- in CMakeLists.txt by hand: the plugin ships inside the KinAMP release, so
+    -- the two travel together, but nothing at runtime hands the Lua side the
+    -- number the binaries were built with.
+    version = "2.9",
+    github_url = "https://www.github.com/kbarni/KinAMP",
+
     -- Path definitions
     bin_folder = bin_folder,
     bin_path = bin_folder .. "startkinamp_koreader.sh",

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 
 # Keep in sync with the GIT release tag: the "Check for updates" dialog compares
 # this against the tag name of the latest GitHub release.
-project(KinAMP VERSION 2.3)
+project(KinAMP VERSION 2.9)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
