@@ -3,6 +3,7 @@ KinAMP3 - It really whips the llama's ass!
 <a href='https://ko-fi.com/E1E71RAR86' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi3.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
 **Contents**
+
 [Features](#features) - [Using the Native app](#native-app) - [Using the Koreader plugin](#koreader-plugin) - [Installation](#installation)
 
 ![Screenshot](assets/kinamp.png)
@@ -42,7 +43,7 @@ Start the native app using the **KinAMP** booklet from the library. You can also
 
 The controls are straightforward: Previous, Play/Pause, Stop and Next buttons, plus Repeat, Shuffle and a Volume slider. *Note: because of buffering between the decoder and playback, a volume change takes about 1 second to apply*.
 
-![Button bar]()
+![Button bar](assets/kinamp_button_bar.png)
 
 The player has 2 modes: *music mode*, which plays local audio files, and *radio mode*, which plays internet radio stations. Switch between the two modes with the button in the lower left corner.
 
