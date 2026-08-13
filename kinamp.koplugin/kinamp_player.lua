@@ -696,6 +696,7 @@ end
 function KinAMPPlayer:showAbout()
     local ButtonDialog = require("ui/widget/buttondialog")
     local TextBoxWidget = require("ui/widget/textboxwidget")
+    local LineWidget = require("ui/widget/linewidget")
     local Config = require("kinamp_config")
     local T = require("ffi/util").template
 
@@ -714,24 +715,36 @@ function KinAMPPlayer:showAbout()
         },
     }
 
-    -- The rest goes under the title as added widgets: ButtonDialog draws them
-    -- between the title and the buttons and gives us the width to lay them out
-    -- in. `separator` draws the line the GTK dialog has above the link.
+    -- The rest goes under the title as an added widget: ButtonDialog draws it
+    -- between the title and the buttons and gives us the width to lay it out
+    -- in. It has to be a single addWidget() call: addWidget() reinits the
+    -- dialog on every call, and that free()s whichever widgets are already
+    -- added. TextBoxWidget only rebuilds its line list in init(), never on a
+    -- later free()+repaint, so a widget added in an earlier call is left
+    -- blank once a second call frees it. Bundling everything into one
+    -- VerticalGroup keeps it to a single reinit, before anything has
+    -- rendered. The line replicates the separator ButtonDialog itself draws
+    -- for a widget with `separator = true`, which the GTK dialog also has
+    -- above its link.
     local width = dialog:getAddedWidgetAvailableWidth()
-    dialog:addWidget(TextBoxWidget:new{
-        text = T(_("Kindle media player\nVersion %1\n© 2026 kbarni"), Config.version),
-        face = Font:getFace("infofont"),
-        width = width,
-        alignment = "center",
-        separator = true,
+    dialog:addWidget(VerticalGroup:new{
         not_focusable = true,
-    })
-    dialog:addWidget(TextBoxWidget:new{
-        text = Config.github_url,
-        face = Font:getFace("smallinfofont"),
-        width = width,
-        alignment = "center",
-        not_focusable = true,
+        TextBoxWidget:new{
+            text = T(_("Kindle media player\nVersion %1\n© 2026 kbarni"), Config.version),
+            face = Font:getFace("infofont"),
+            width = width,
+            alignment = "center",
+        },
+        LineWidget:new{
+            background = Blitbuffer.COLOR_GRAY,
+            dimen = Geom:new{ w = width, h = Size.line.medium },
+        },
+        TextBoxWidget:new{
+            text = Config.github_url,
+            face = Font:getFace("smallinfofont"),
+            width = width,
+            alignment = "center",
+        },
     })
 
     UIManager:show(dialog)
