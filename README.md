@@ -7,15 +7,7 @@ KinAMP3 - It really whips the llama's ass!
 KinAMP is a native music and internet radio player developed for jailbroken Kindles. It runs as a standalone app or as a Koreader plugin, so you can keep listening while you read.
 
 **Contents**
-- [Features](#features)
-- [Usage](#usage)
-  - [Native app](#native-app)
-    - [Using radio mode](#using-radio-mode)
-    - [Using background mode](#using-background-mode)
-  - [Koreader plugin](#koreader-plugin)
-    - [Quick access to KinAMP in Koreader](#quick-access-to-kinamp-in-koreader)
-- [Installation](#installation)
-- [License](#license)
+[Features](#features) - [Using the Native app](#native-app) - [Using the Koreader plugin](#koreader-plugin) - [Installation](#installation)
 
 Features
 --------
