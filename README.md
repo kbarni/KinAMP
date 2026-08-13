@@ -4,10 +4,18 @@ KinAMP3 - It really whips the llama's ass!
 
 ![Screenshot](assets/kinamp.png)
 
-Kinamp is a native music and internet radio player developed for jailbroken Kindles.
+KinAMP is a native music and internet radio player developed for jailbroken Kindles. It runs as a standalone app or as a Koreader plugin, so you can keep listening while you read.
 
 **Contents**
-Features - Using as native app - Koreader plugin - Installation
+- [Features](#features)
+- [Usage](#usage)
+  - [Native app](#native-app)
+    - [Using radio mode](#using-radio-mode)
+    - [Using background mode](#using-background-mode)
+  - [Koreader plugin](#koreader-plugin)
+    - [Quick access to KinAMP in Koreader](#quick-access-to-kinamp-in-koreader)
+- [Installation](#installation)
+- [License](#license)
 
 Features
 --------
@@ -40,31 +48,33 @@ Usage
 
 Start the native app using the **KinAMP** booklet from the library. You can also use **KUAL** launcher to start the app.
 
-The usage is quite straitforward: Previous, Play/pause, Stop and Next buttons, Repeat and Shuffle and Volume slider. *Note: as there's a buffering between the decoder and the playback, the volume change will take around 1 second*.
+The controls are straightforward: Previous, Play/Pause, Stop and Next buttons, plus Repeat, Shuffle and a Volume slider. *Note: because of buffering between the decoder and playback, a volume change takes about 1 second to apply*.
 
 ![Button bar](assets/kinamp_buttons.png)
 
-The player has 2 modes: *music mode* - will play local audio files and *radio mode* - playing internet radio stations. Switch between the two modes with the button in the lower left corner.
+The player has 2 modes: *music mode*, which plays local audio files, and *radio mode*, which plays internet radio stations. Switch between the two modes with the button in the lower left corner.
+
+Music decoding itself uses relatively little power; on an e-ink device, the frontlight and screen redraws consume far more energy. To preserve battery, it's recommended to *turn off (or dim) the frontlight* and enable the *reduce screen refresh* option.
 
 #### Using radio mode
 
-First, you need to create your favorite radio list. Start the **Radio list editor** utility from KUAL. Add a station from the provided list (*over 45000 radio stations!*) or add the station URL manually.
+First, create your favorite radio list. Start the **Radio list editor** utility from KUAL. Add a station from the provided list (*over 45000 radio stations!*) or add a station URL manually.
 
-Then, switch to radio mode using the button in lower left corner. The playlist will be replaced with the radio station list.
+Then switch to radio mode using the button in the lower left corner. The playlist will be replaced with the radio station list.
 
 ##### Creating a station list manually
 
-Create a file called `.kinamp_radio.txt` using a text editor with the list of your preferred stations in the format `Station name|URL` for each line. Example:
+Create a file called `.kinamp_radio.txt` in a text editor, listing your preferred stations one per line in the format `Station name|URL`. Example:
 
     Virgin Radio|http://icy.unitedradio.it/VirginHardRock.mp3
 
-Copy this file to the Kinamp folder on the Kindle.
+Copy this file to the `KinAMP` folder on the Kindle (`/mnt/us/KinAMP`).
 
 #### Using background mode
 
-- Start KinAMP and create your desired playlist.
-- Click the *Background* button (rectangle with an arrow, next to close). KinAMP will close and background playback will start
-- To stop background playback, click the KinAMP booklet again.
+- Start KinAMP and set up your desired playlist or radio station.
+- Click the *Background* button (rectangle with an arrow, next to Close). KinAMP will close and playback will continue in the background.
+- To stop background playback, launch the KinAMP booklet again.
 
 ### Koreader plugin
 
@@ -72,22 +82,22 @@ The KinAMP plugin is in the Koreader *Tools menu*. It will display a floating pl
 
 ![Koreader plugin](assets/kinamp-koreader.png)
 
-Use the left button to access the playlist editor, the right button for the radio stations. Unlike the native app, the **Koreader plugin allows to manage directly the radio stations**. The plugin also allows saving and loading playlists directly.
+Use the left button to open the playlist editor, and the right button for the radio stations. Unlike the native app, **the Koreader plugin lets you manage radio stations directly**, and lets you save and load playlists on the fly.
 
-The *hamburger menu* (top left corner) contains the more advanced options: playback order, bluetooth connection management, about dialog. To completely shut down the player daemon, choose *Quit player*.
+The *hamburger menu* (top left corner) contains more advanced options: playback order, Bluetooth connection management and the about dialog. To completely shut down the player daemon, choose *Quit player*.
 
 #### Quick access to KinAMP in Koreader
 
-To quickly access KinAMP, set a gesture to invoke it: Cog menu > Taps and Gestures > Gesture Manager > Tap corner. Set bottom right to KinAMP: show player. This will allow to access KinAMP with a tap at the bottom right corner.
+To quickly access KinAMP, assign it to a gesture: **Cog menu > Taps and Gestures > Gesture Manager > Tap corner**, then set the bottom-right corner to *KinAMP: show player*. This lets you open KinAMP with a single tap on the bottom-right corner of the screen.
 
-**This is recommended if you plan to listen music more often while reading.**
+**This is recommended if you plan to listen to music often while reading.**
 
 Installation
 ------------
 
-Download the latest release and unzip it to the root of the Kindle. Start it from KUAL or from the home screen.
+Download the [latest release](https://github.com/kbarni/KinAMP/releases) and unzip it to the root of the Kindle's storage. Start it from KUAL or from the home screen.
 
-For more information about building and porting for other devices, consult the [Hacking](HACKING.md) document.
+For more information about building and porting to other devices, see the [Hacking](HACKING.md) document.
 
 License
 -------

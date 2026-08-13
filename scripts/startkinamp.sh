@@ -3,8 +3,8 @@
 LIBDIR=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "libs_hf/" || echo "libs_pw2/")
 export LD_LIBRARY_PATH=$LIBDIR
 
-KINAMP=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP" || echo "KinAMP-armel")
-KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "KinAMP-minimal-armel")
+KINAMP=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP" || echo "KinAMP-pw2")
+KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "KinAMP-minimal-pw2")
 
 KINAMP_DIR=/mnt/us/KinAMP
 # Runtime files live on a filesystem that can hold a FIFO; /mnt/us (vfat)
@@ -13,15 +13,6 @@ KINAMP_RUNTIME_DIR="${KINAMP_RUNTIME_DIR:-/tmp}"
 STATUS_FILE="$KINAMP_RUNTIME_DIR/kinamp_status"
 CMD_FIFO="$KINAMP_RUNTIME_DIR/kinamp_cmd"
 
-# Prefer the pid the player publishes in its status file.
-#
-# The fallback has to match the process name, not the command line: /proc/<pid>/comm
-# is truncated to 15 characters, so a plain `pgrep KinAMP-minimal-armel` never
-# matches on PW2, but `pgrep -f` is worse - it matches any process whose
-# arguments merely mention the binary, including the shell invoking this script.
-# Killing that leaves the real player running while a second one starts, and two
-# players then fight over the same status file and command FIFO. So match the
-# truncated name exactly.
 background_pid() {
     if [ -f "$STATUS_FILE" ]; then
         pid=$(sed -n 's/^pid=//p' "$STATUS_FILE" | head -n 1)
