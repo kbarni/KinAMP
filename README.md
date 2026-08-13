@@ -14,13 +14,14 @@ Features
 --------
 
 - Fully native fast (C++ and GTK2) interface
+- Koreader plugin
 - Simple to use
 - Internet radio streams
-- Koreader plugin
 - Interface optimized for eink displays (minimal redraws to save battery)
 - Low power consumption (4-5% per hour with frontlight and display updates off)
 - Fast access to Bluetooth and frontlight settings
 - Background mode to continue listening while reading.
+- Sleep mode for automatic stopping after a given time or at the end of the playlist
 - Uses [miniaudio](https://github.com/mackron/miniaudio) library for decoding.
 - Uses the integrated GStreamer library for output
 - No other dependencies
@@ -70,6 +71,8 @@ Copy this file to the `KinAMP` folder on the Kindle (`/mnt/us/KinAMP`).
 - To stop background playback, launch the KinAMP booklet again.
 
 ### Koreader plugin
+
+**Since version 3, the Koreader plugin offers the more streamlined experience for KinAMP.**
 
 The KinAMP plugin is in the Koreader *Tools menu*. It will display a floating player as in the screenshot below:
 
