@@ -42,7 +42,7 @@ Start the native app using the **KinAMP** booklet from the library. You can also
 
 The controls are straightforward: Previous, Play/Pause, Stop and Next buttons, plus Repeat, Shuffle and a Volume slider. *Note: because of buffering between the decoder and playback, a volume change takes about 1 second to apply*.
 
-![Button bar](assets/kinamp_buttons.png)
+![Button bar]()
 
 The player has 2 modes: *music mode*, which plays local audio files, and *radio mode*, which plays internet radio stations. Switch between the two modes with the button in the lower left corner.
 
