@@ -54,9 +54,11 @@ Music decoding itself uses relatively little power; on an e-ink device, the fron
 
 #### Using radio mode
 
-First, create your favorite radio list. Start the **Radio list editor** utility from KUAL. Add a station from the provided list (*over 45000 radio stations!*) or add a station URL manually.
+Switch to radio mode using the button in the lower left corner. The playlist will be replaced with the radio station list.
 
-Then switch to radio mode using the button in the lower left corner. The playlist will be replaced with the radio station list.
+To build your favorite radio list, press **Edit stations** in the lower button bar. The station manager lists your stations and lets you add one from the provided list (*over 45000 radio stations!*) or by typing a name and URL by hand - text is entered on the built-in on-screen keyboard, so no system keyboard is needed. Playlist links (`.pls`, `.m3u`) are unwrapped to the stream address automatically.
+
+The same job can also be done outside the player with the **Radio list editor** utility from KUAL.
 
 ##### Creating a station list manually
 
@@ -80,7 +82,7 @@ The KinAMP plugin is in the Koreader *Tools menu*. It will display a floating pl
 
 ![Koreader plugin](assets/kinamp-koreader.png)
 
-Use the left button to open the playlist editor, and the right button for the radio stations. Unlike the native app, **the Koreader plugin lets you manage radio stations directly**, and lets you save and load playlists on the fly.
+Use the left button to open the playlist editor, and the right button for the radio stations. The plugin manages radio stations directly, and lets you save and load playlists on the fly.
 
 The *hamburger menu* (top left corner) contains more advanced options: playback order, Bluetooth connection management and the about dialog. To completely shut down the player daemon, choose *Quit player*.
 

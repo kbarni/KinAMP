@@ -19,6 +19,7 @@
 #include "music_backend.h"
 #include "tags.h"
 #include "icons.h"
+#include "radiodialog.hpp"
 
 // KINAMP_VERSION comes from project() in CMakeLists.txt. No fallback: a guessed
 // version makes the update check offer bogus updates.
@@ -1267,55 +1268,17 @@ void on_load_clicked(GtkWidget *widget, gpointer data) {
     gtk_widget_destroy(dialog);
 }
 
-void on_add_station_clicked(GtkWidget *widget, gpointer data) {
-    AppData *app_data = (AppData*)data;
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("L:A_N:Add Radio Station_PC:TS_ID:add_station",
-                                                    GTK_WINDOW(gtk_widget_get_toplevel(widget)),
-                                                    GTK_DIALOG_MODAL,
-                                                    GTK_STOCK_OK, GTK_RESPONSE_ACCEPT,
-                                                    GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
-                                                    NULL);
-
-    GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget *grid = gtk_table_new(2, 2, FALSE);
-    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
-    gtk_container_add(GTK_CONTAINER(content_area), grid);
-
-    GtkWidget *name_label = gtk_label_new("Name:");
-    GtkWidget *url_label = gtk_label_new("URL:");
-    GtkWidget *name_entry = gtk_entry_new();
-    GtkWidget *url_entry = gtk_entry_new();
-
-    gtk_table_attach_defaults(GTK_TABLE(grid), name_label, 0, 1, 0, 1);
-    gtk_table_attach_defaults(GTK_TABLE(grid), name_entry, 1, 2, 0, 1);
-    gtk_table_attach_defaults(GTK_TABLE(grid), url_label, 0, 1, 1, 2);
-    gtk_table_attach_defaults(GTK_TABLE(grid), url_entry, 1, 2, 1, 2);
-
-    gtk_widget_show_all(grid);
-
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        const char *name = gtk_entry_get_text(GTK_ENTRY(name_entry));
-        const char *url = gtk_entry_get_text(GTK_ENTRY(url_entry));
-        if (name && url && strlen(name) > 0 && strlen(url) > 0) {
-            GtkTreeIter iter;
-            gtk_list_store_append(app_data->radio_store, &iter);
-            gtk_list_store_set(app_data->radio_store, &iter, 0, name, 1, url, -1);
-            save_radio_stations(app_data);
-        }
-    }
-    gtk_widget_destroy(dialog);
+// The station manager edits app_data->radio_store in place; this puts the
+// result on disk, the way radio_cli saves after every change.
+static void on_stations_changed(void *user_data) {
+    save_radio_stations((AppData*)user_data);
 }
 
-void on_remove_station_clicked(GtkWidget *widget, gpointer data) {
+void on_manage_stations_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
     AppData *app_data = (AppData*)data;
-    GtkTreeSelection *selection = gtk_tree_view_get_selection(app_data->playlist_treeview);
-    GtkTreeIter iter;
-    GtkTreeModel *model;
-    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        gtk_list_store_remove(app_data->radio_store, &iter);
-        save_radio_stations(app_data);
-    }
+    show_station_manager(GTK_WINDOW(app_data->window), app_data->radio_store,
+                         on_stations_changed, app_data);
 }
 
 void on_switch_mode_clicked(GtkWidget *widget, gpointer data) {
@@ -1999,8 +1962,11 @@ int main(int argc, char* argv[]) {
     app_data.radio_action_hbox = gtk_hbox_new(FALSE, 10);
     gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.radio_action_hbox, FALSE, FALSE, 0);
 
-    GtkWidget *radio_info_label = gtk_label_new("Add radio stations in KUAL.");
-    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), radio_info_label, FALSE, FALSE, 0);
+    GtkWidget *manage_stations_button = gtk_button_new_with_label("Edit stations");
+    gtk_container_set_border_width(GTK_CONTAINER(manage_stations_button), 5);
+    g_signal_connect(manage_stations_button, "clicked",
+                     G_CALLBACK(on_manage_stations_clicked), &app_data);
+    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), manage_stations_button, FALSE, FALSE, 0);
 
     // --- Right controls (Common to both modes) ---
     GtkWidget *right_controls_hbox = gtk_hbox_new(FALSE, 2);
@@ -2015,17 +1981,6 @@ int main(int argc, char* argv[]) {
     GtkWidget *align_right_controls = gtk_alignment_new(1, 0.5, 0, 0);
     gtk_container_add(GTK_CONTAINER(align_right_controls), right_controls_hbox);
     gtk_box_pack_start(GTK_BOX(bottom_action_hbox), align_right_controls, TRUE, TRUE, 0);
-/*    GtkWidget *add_station_button = gtk_button_new_with_label("Add station");
-    gtk_container_set_border_width(GTK_CONTAINER(add_station_button), 5);
-    GtkWidget *remove_station_button = gtk_button_new_with_label("Remove selected");
-    gtk_container_set_border_width(GTK_CONTAINER(remove_station_button), 5);
-
-    g_signal_connect(add_station_button, "clicked", G_CALLBACK(on_add_station_clicked), &app_data);
-    g_signal_connect(remove_station_button, "clicked", G_CALLBACK(on_remove_station_clicked), &app_data);
-
-    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), add_station_button, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), remove_station_button, FALSE, FALSE, 0);*/
-
 
     load_radio_stations(&app_data);
     load_state(&app_data);

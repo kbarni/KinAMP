@@ -59,6 +59,7 @@ if(LIPC_LIBRARY)
         music_backend.cpp
         icy_client.cpp
         tags.cpp
+        station_db.cpp
         ${MPEG4_SOURCES}
     )
 
@@ -133,6 +134,6 @@ endif()
 
 kinamp_check_abi(KinAMP-minimal)
 
-add_executable(radio_cli radio_cli.cpp)
+add_executable(radio_cli radio_cli.cpp station_db.cpp)
 target_compile_options(radio_cli PRIVATE -Wall -Wextra)
 kinamp_check_abi(radio_cli)
