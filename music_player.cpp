@@ -1276,7 +1276,7 @@ void on_load_clicked(GtkWidget *widget, gpointer data) {
 }
 
 // The station manager edits app_data->radio_store in place; this puts the
-// result on disk, the way radio_cli saves after every change.
+// result on disk after every change.
 static void on_stations_changed(void *user_data) {
     save_radio_stations((AppData*)user_data);
 }

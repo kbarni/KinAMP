@@ -56,7 +56,7 @@ return {
     radio_file = bin_folder .. ".kinamp_radio.txt",
     playlist_file = bin_folder .. ".kinamp_playlist.m3u",
 
-    -- Station dump shipped with the binaries, the same one radio_cli reads.
+    -- Station dump shipped with the binaries, the same one the player reads.
     -- First candidate only, see kinamp_stationdb.lua for the rest.
     stations_db = bin_folder .. "allStations.json",
 

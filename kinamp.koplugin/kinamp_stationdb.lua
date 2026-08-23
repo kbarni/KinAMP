@@ -1,4 +1,4 @@
--- Station discovery. Two jobs, both ports of what radio_cli does on the device:
+-- Station discovery. Two jobs, both ports of what the player does on the device:
 --
 --   * searching allStations.json, the 3.4 MB radio-browser dump shipped next to
 --     the binaries, for stations whose name matches what the user typed;

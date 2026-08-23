@@ -1,8 +1,8 @@
 #ifndef RADIODIALOG_HPP
 #define RADIODIALOG_HPP
 
-// Radio station manager: the GTK counterpart of the `radio_cli` editor. Lists
-// the stations, adds one from the bundled database or by hand, removes one.
+// Radio station manager, in the player itself. Lists the stations, adds one
+// from the bundled database or by hand, removes one.
 // Text is typed on the on-screen keyboard (keyboarddialog.hpp) because the
 // Kindle's own keyboard cannot be raised over a native GTK window.
 //

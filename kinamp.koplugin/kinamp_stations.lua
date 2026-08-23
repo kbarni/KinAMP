@@ -10,9 +10,6 @@
 -- station is to start listening to it makes editing one an accident away from a
 -- burst of noise.
 --
--- This replaces radio_cli, the text-mode editor that had to be launched from
--- KUAL with the reader closed.
---
 -- Adding a station is the one slow operation: a good third of the links in the
 -- database are .pls/.m3u playlists and the player has no playlist reader, so
 -- those have to be fetched and unwrapped down to a stream first (see

@@ -1,10 +1,10 @@
 #ifndef STATION_DB_H
 #define STATION_DB_H
 
-// Station list handling shared by the radio_cli editor and the GTK player's
-// station manager: searching the bundled radio-browser dump, and unwrapping
-// .pls/.m3u links down to a stream URL. Everything here is UI-free - the
-// callers do their own prompting through the StreamChooser callback.
+// Station list handling behind the GTK player's station manager: searching
+// the bundled radio-browser dump, and unwrapping .pls/.m3u links down to a
+// stream URL. Everything here is UI-free - the callers do their own
+// prompting through the StreamChooser callback.
 
 #include <string>
 #include <vector>

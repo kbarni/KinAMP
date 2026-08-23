@@ -133,7 +133,3 @@ else()
 endif()
 
 kinamp_check_abi(KinAMP-minimal)
-
-add_executable(radio_cli radio_cli.cpp station_db.cpp)
-target_compile_options(radio_cli PRIVATE -Wall -Wextra)
-kinamp_check_abi(radio_cli)
