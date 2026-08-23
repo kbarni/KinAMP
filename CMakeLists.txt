@@ -14,37 +14,25 @@ pkg_check_modules(XML IMPORTED_TARGET REQUIRED libxml-2.0)
 
 find_package(Threads REQUIRED)
 
-# --- GStreamer ---
-# The Kindle ships GStreamer 0.10; any modern desktop has 1.0. Detect which one
-# is available and let music_backend.cpp adapt via KINAMP_GST_API. The 0.10 path
-# keeps the historical bare -lgstreamer-0.10 link because the Kindle sysroot has
-# the headers on the default include path but no gstreamer-0.10.pc.
-pkg_check_modules(GST1 IMPORTED_TARGET gstreamer-1.0)
-if(GST1_FOUND)
-    set(KINAMP_GST_LIBS PkgConfig::GST1)
-    set(KINAMP_GST_API 1)
-    # autoaudiosink picks whatever the desktop actually uses (pulse/pipewire/alsa).
-    set(KINAMP_AUDIO_SINK "audioconvert ! audioresample ! autoaudiosink" CACHE STRING
-        "GStreamer sink chain appended to the playback pipeline")
-    message(STATUS "KinAMP: using GStreamer ${GST1_VERSION} (sink: ${KINAMP_AUDIO_SINK})")
-else()
-    set(KINAMP_GST_LIBS gstreamer-0.10)
-    set(KINAMP_GST_API 0)
-    # mixersink is Lab126's sink; it is the only one that mixes with system audio.
-    set(KINAMP_AUDIO_SINK "mixersink" CACHE STRING
-        "GStreamer sink chain appended to the playback pipeline")
-    message(STATUS "KinAMP: using GStreamer 0.10 (sink: ${KINAMP_AUDIO_SINK})")
+option(GST10 "Link against gstreamer-1.0 instead of gstreamer-0.10" OFF)
+# `cmake -DGST10` without a value defines it as an empty string; treat that as ON.
+if(DEFINED GST10 AND GST10 STREQUAL "")
+    set(GST10 ON)
 endif()
+
+if(GST10)
+    set(GST_LIB gstreamer-1.0)
+else()
+    set(GST_LIB gstreamer-0.10)
+endif()
+message(STATUS "Using ${GST_LIB}")
+pkg_check_modules(GST IMPORTED_TARGET REQUIRED ${GST_LIB})
 
 # liblipc only exists on the Kindle; without it the GTK player cannot be built.
 # KinAMP-minimal only needs it for the Bluetooth keepalive and still builds
 # without it, so there it is optional rather than a precondition.
 find_library(LIPC_LIBRARY NAMES lipc)
 
-# --- Target ABI guard ---
-# Cross builds link against a modern libstdc++ but run against the Kindle's,
-# which stops at GLIBCXX_3.4.28. Anything newer only fails once the binary is on
-# the device, so check it here instead. Host builds are exempt.
 option(KINAMP_CHECK_ABI "Fail the build if a binary needs a newer libstdc++ than the device has" ON)
 set(KINAMP_MAX_GLIBCXX "3.4.28" CACHE STRING "Highest GLIBCXX version the target device provides")
 
@@ -80,18 +68,18 @@ if(LIPC_LIBRARY)
         /usr/include
     )
 
+    target_compile_definitions(KinAMP PRIVATE $<$<BOOL:${GST10}>:GST10>)
+
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         KINAMP_VERSION="${PROJECT_VERSION}"
-        KINAMP_GST_API=${KINAMP_GST_API}
-        KINAMP_AUDIO_SINK="${KINAMP_AUDIO_SINK}"
     )
 
     target_link_libraries(${PROJECT_NAME} PRIVATE
         PkgConfig::GTK
         PkgConfig::XML
         Threads::Threads
+        PkgConfig::GST
         miniaudio
-        ${KINAMP_GST_LIBS}
         gthread-2.0
         ${LIPC_LIBRARY}
         faad
@@ -122,19 +110,19 @@ target_include_directories(KinAMP-minimal PRIVATE
 target_compile_definitions(KinAMP-minimal PRIVATE
     KINAMP_VERSION="${PROJECT_VERSION}"
     KINAMP_GST_API=${KINAMP_GST_API}
-    KINAMP_AUDIO_SINK="${KINAMP_AUDIO_SINK}"
 )
 
 target_link_libraries(KinAMP-minimal PRIVATE
     PkgConfig::GTK
     PkgConfig::XML
-    ${KINAMP_GST_LIBS}
+    PkgConfig::GST
     Threads::Threads
     miniaudio
     faad
     dl
     rt
 )
+target_compile_definitions(KinAMP-minimal PRIVATE $<$<BOOL:${GST10}>:GST10>)
 
 if(LIPC_LIBRARY)
     target_compile_definitions(KinAMP-minimal PRIVATE KINAMP_HAVE_LIPC=1)

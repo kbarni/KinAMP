@@ -26,44 +26,6 @@ extern "C" {
 #include "mpeg4/mp4read.h"
 }
 
-// --- GStreamer 0.10 / 1.0 compatibility ---
-// KINAMP_GST_API is set by CMake from whichever GStreamer it found: 0 for the
-// Kindle's 0.10, 1 for a desktop 1.0. Only three things differ for us: the
-// raw-audio caps name, the sink element, and the duration query signature.
-#ifndef KINAMP_GST_API
-#  define KINAMP_GST_API 0
-#endif
-#ifndef KINAMP_AUDIO_SINK
-#  if KINAMP_GST_API >= 1
-#    define KINAMP_AUDIO_SINK "audioconvert ! audioresample ! autoaudiosink"
-#  else
-#    define KINAMP_AUDIO_SINK "mixersink"
-#  endif
-#endif
-
-#if KINAMP_GST_API >= 1
-#  define KINAMP_RAW_CAPS "audio/x-raw, format=S16LE, layout=interleaved, rate=%d, channels=2"
-static inline gboolean kinamp_query_duration(GstElement *pipeline, gint64 *duration) {
-    return gst_element_query_duration(pipeline, GST_FORMAT_TIME, duration);
-}
-#else
-#  define KINAMP_RAW_CAPS "audio/x-raw-int, endianness=1234, signed=true, width=16, depth=16, rate=%d, channels=2"
-static inline gboolean kinamp_query_duration(GstElement *pipeline, gint64 *duration) {
-    GstFormat format = GST_FORMAT_TIME;
-    return gst_element_query_duration(pipeline, &format, duration);
-}
-#endif
-
-// Lets a desktop build override the sink without recompiling, e.g.
-// KINAMP_SINK="alsasink device=hw:1" ./KinAMP-minimal --music
-static const char* kinamp_audio_sink() {
-    const char* env = g_getenv("KINAMP_SINK");
-    return (env && *env) ? env : KINAMP_AUDIO_SINK;
-}
-
-// Vorbis/OGG support. miniaudio has no built-in Vorbis decoder; it enables one
-// (MA_HAS_VORBIS) only if stb_vorbis is visible in the same translation unit.
-// The declarations must come before miniaudio.h and the implementation after it.
 #define STB_VORBIS_HEADER_ONLY
 #include "miniaudio/extras/stb_vorbis.c"
 #undef STB_VORBIS_HEADER_ONLY
@@ -76,13 +38,22 @@ static const char* kinamp_audio_sink() {
 // Global mutex to protect the non-reentrant mp4read library
 static std::mutex mp4_mutex;
 
+#ifdef GST10
+static inline gboolean kinamp_query_duration(GstElement *pipeline, gint64 *duration) {
+    return gst_element_query_duration(pipeline, GST_FORMAT_TIME, duration);
+}
+#else
+static inline gboolean kinamp_query_duration(GstElement *pipeline, gint64 *duration) {
+    GstFormat format = GST_FORMAT_TIME;
+    return gst_element_query_duration(pipeline, &format, duration);
+}
+#endif
+
 const char* PIPE_PATH = "/tmp/kinamp_audio_pipe";
 
 // How much of a stream may be buffered for format sniffing before decoding.
 #define STREAM_PEEK_MAX 8192
 
-// The pipeline caps are fixed when playback starts and play_file() pins streams
-// to this rate, so every stream decoder has to output it.
 static const int STREAM_OUTPUT_RATE = 44100;
 static const int STREAM_OUTPUT_CHANNELS = 2;
 
@@ -1282,10 +1253,17 @@ void MusicBackend::play_file(const char* filepath, int start_time) {
     int rate = (current_samplerate > 0) ? current_samplerate : 44100;
 
     GError *pipeline_error = NULL;
+#ifdef GST10
     gchar *pipeline_desc = g_strdup_printf(
-        "filesrc location=\"%s\" ! " KINAMP_RAW_CAPS " ! queue ! %s",
-        PIPE_PATH, rate, kinamp_audio_sink()
+        "filesrc location=\"%s\" ! audio/x-raw, format=S16LE, layout=interleaved, rate=%d, channels=2 ! queue ! mixersink",
+        PIPE_PATH, rate
     );
+#else
+    gchar *pipeline_desc = g_strdup_printf(
+        "filesrc location=\"%s\" ! audio/x-raw-int, endianness=1234, signed=true, width=16, depth=16, rate=%d, channels=2 ! queue ! mixersink",
+        PIPE_PATH, rate
+    );
+#endif
     pipeline = gst_parse_launch(pipeline_desc, &pipeline_error);
 
     if (!pipeline) {
