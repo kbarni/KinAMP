@@ -649,6 +649,7 @@ static double parse_double(const char *text, double fallback) {
 void load_state(AppData *app_data) {
     std::string playlist_path = get_config_path(".kinamp_playlist.m3u");
     std::ifstream infile(playlist_path.c_str());
+    bool had_playlist = infile.is_open();
     if (infile.is_open()) {
         gtk_list_store_clear(app_data->playlist_store);
         std::string line;
@@ -663,6 +664,7 @@ void load_state(AppData *app_data) {
 
     std::string config_path = get_config_path(".kinamp.conf");
     std::ifstream conffile(config_path.c_str());
+    bool had_config = conffile.is_open();
     int current_index = -1;
     if (conffile.is_open()) {
         std::string line;
@@ -694,7 +696,19 @@ void load_state(AppData *app_data) {
         }
         conffile.close();
     }
-    
+
+    // First run: neither state file exists yet, so the playlist is empty and
+    // there is nothing to show. Seed it with the demo track shipped next to the
+    // binary so the player has something to play out of the box.
+    if (!had_playlist && !had_config) {
+        std::string demo_path = get_config_path("DEMO.mp3");
+        if (g_file_test(demo_path.c_str(), G_FILE_TEST_IS_REGULAR)) {
+            playlist_append(app_data->playlist_store, demo_path.c_str());
+            queue_tag_scan(app_data, true);
+            current_index = 0;
+        }
+    }
+
     if (app_data->is_radio_mode) {
         set_button_icon(app_data->switch_mode_button, app_data->is_hires ? musiclibrary_icon : musiclibrary_icon_lr);
         gtk_widget_hide(app_data->music_action_hbox);
