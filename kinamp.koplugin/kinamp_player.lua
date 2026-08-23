@@ -192,12 +192,20 @@ function KinAMPPlayer:init()
     }
 
     -- Progress
+    --
+    -- Pure black fill, not the widget's default dark grey: the position tick
+    -- refreshes this row in "fast" mode, which on a Kindle is DU with
+    -- EPDC_FLAG_FORCE_MONOCHROME. That quantises the region to black or white,
+    -- and COLOR_DARK_GRAY (0x88) lands on the white side of the threshold, so
+    -- a grey fill is simply not drawn and the bar looks stuck at zero. Same
+    -- reason kinamp_slider paints in black and white only.
     self.progress_bar = ProgressWidget:new{
         width = content_width,
         height = Screen:scaleBySize(10),
         percentage = 0,
         margin_h = 0,
         margin_v = 0,
+        fillcolor = Blitbuffer.COLOR_BLACK,
     }
     -- Radio has no length, so the bar is swapped for a blank of the same height
     -- rather than left sitting at zero.
