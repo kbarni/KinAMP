@@ -547,6 +547,25 @@ function Backend.read_m3u(path)
     return entries
 end
 
+-- Hands the queue on disk to a running player, which otherwise goes on with
+-- whatever list it last loaded (see the note at the top of kinamp_playlist.lua).
+--
+-- `stop_playback` is for a list that was replaced wholesale rather than edited:
+-- the player is on a track the queue no longer has, so interrupting it is the
+-- point. An ordinary edit only reaches a player that isn't playing anything -
+-- `load` stops playback, and cutting a song off mid-track to add a file to the
+-- end of the queue would be worse than the drift.
+--
+-- Nothing to do when nobody is listening (a cold start reads the file itself),
+-- or when the player is on the radio: it isn't playing the music queue, and
+-- `load` would drag it out of radio mode.
+function Backend.sync_queue(stop_playback)
+    local status = Backend.get_status()
+    if not status or status.is_radio then return false end
+    if not stop_playback and (status.is_playing or status.is_paused) then return false end
+    return Backend.send("load " .. Config.playlist_file)
+end
+
 -- Plays the internal queue starting at `index` (1-based).
 function Backend.play_from_index(index, items)
     if items and not Backend.save_internal_playlist(items) then return false end

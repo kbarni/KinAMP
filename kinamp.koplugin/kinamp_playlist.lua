@@ -6,11 +6,12 @@
 -- widget opens this, so the same window both shows the queue and edits it - the
 -- KOReader-side counterpart of the GTK player's playlist pane.
 --
--- Edits are written to the playlist file straight away, but a *playing* daemon
--- is left alone: the player's only way to take a new list is the `load`
--- command, which stops playback (see cli_player.cpp). So a queue edited
--- mid-track applies from the next time playback starts, which is what tapping a
--- track here does.
+-- Edits are written to the playlist file straight away, and handed to a running
+-- player as well - but the player's only way to take a new list is the `load`
+-- command, which stops playback (see cli_player.cpp), so a *playing* one is left
+-- alone: a queue edited mid-track applies from the next time playback starts,
+-- which is what tapping a track here does. Clearing or loading a list is the
+-- exception: what it is playing has just been thrown away, so it is stopped.
 
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -63,11 +64,26 @@ function PlaylistManager:genItemTable()
     local items = {}
     -- Marking the playing track makes the list double as a "where am I in the
     -- album" view, which is half of what it gets opened for.
+    --
+    -- By path rather than by index: the player reports a position in the list it
+    -- last loaded, and whenever that isn't this one - a queue edited mid-track,
+    -- a list replaced under a player that kept going - the same number points at
+    -- an unrelated track here. The index is only used to pick between duplicates
+    -- of the same path, and only when it names one of them.
     local status = Backend.get_status()
-    local playing = status and not status.is_radio and status.index or nil
+    local playing_path = nil
+    if status and not status.is_radio and status.path and status.path ~= "" then
+        playing_path = status.path
+    end
+    local playing_idx = playing_path and status.index or nil
+    if playing_idx and self.playlist[playing_idx] ~= playing_path then
+        playing_idx = nil
+    end
 
     for idx, path in ipairs(self.playlist) do
-        local mark = (idx == playing) and PLAYING_MARK or ""
+        local marked = playing_path ~= nil and path == playing_path
+                       and (playing_idx == nil or idx == playing_idx)
+        local mark = marked and PLAYING_MARK or ""
         items[#items + 1] = {
             text = string.format("%s%d. %s", mark, idx, basename(path)),
             path = path,
@@ -83,11 +99,16 @@ function PlaylistManager:genItemTable()
     return items
 end
 
-function PlaylistManager:savePlaylist(keep_idx)
+-- keep_idx is the row to stay on. Pass `replaced` when the whole list was swapped
+-- rather than edited, so a player still on the old queue is stopped rather than
+-- left playing a track this list no longer has. Syncing before the redraw, so
+-- the playing mark is drawn from what the player ends up holding.
+function PlaylistManager:savePlaylist(keep_idx, replaced)
     if not Backend.save_internal_playlist(self.playlist) then
         notify(_("Could not save the playlist."), 3)
         return false
     end
+    Backend.sync_queue(replaced)
     self:updateList(keep_idx)
     return true
 end
@@ -269,7 +290,7 @@ function PlaylistManager:confirmClear()
         ok_text = _("Clear"),
         ok_callback = function()
             self.playlist = {}
-            if self:savePlaylist() then
+            if self:savePlaylist(nil, true) then
                 notify(_("Playlist cleared."))
             end
         end,
@@ -356,7 +377,7 @@ function PlaylistManager:loadPlaylist()
                 return
             end
             self.playlist = entries
-            if self:savePlaylist(1) then
+            if self:savePlaylist(1, true) then
                 notify(T(_("Loaded %1 tracks."), #entries))
             end
         end,

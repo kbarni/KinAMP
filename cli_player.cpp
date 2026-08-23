@@ -627,8 +627,13 @@ void handle_command(CliState* state, const std::string& raw) {
         // Stages the playlist without starting it, so a client can send
         // "load <path>\nindex <n>" in one go and land on the track it wants
         // instead of briefly playing the first one.
+        //
+        // An empty list is a load like any other: it's how a client says the
+        // queue has been cleared. Only an unreadable file is refused, and then
+        // the list we already have is left alone - failing to open a playlist
+        // is no reason to drop the one that is playing.
         std::vector<std::string> loaded;
-        if (!arg.empty() && load_playlist(arg, loaded) && !loaded.empty()) {
+        if (!arg.empty() && load_playlist(arg, loaded)) {
             cancel_reconnect(state);
             state->backend->stop();
             // swap, not assign: takes the buffer instead of copying every path.

@@ -1190,6 +1190,13 @@ void on_clear_playlist_clicked(GtkWidget *widget, gpointer data) {
     (void)widget;
     AppData *app_data = (AppData*)data;
     GtkListStore *playlist_store = app_data->playlist_store;
+
+    // Stop first: the selected row is this player's only notion of a current
+    // track, so clearing the list leaves whatever is playing unreachable -
+    // audible, out of the list, and with next/prev and the play button no
+    // longer able to touch it. The queue it came from is gone; so is it.
+    app_data->backend->stop();
+
     gtk_list_store_clear(playlist_store);
     app_data->tag_scan_index = 0;  // the rows the scan was walking are gone
 }
