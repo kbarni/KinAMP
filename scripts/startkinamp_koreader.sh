@@ -6,12 +6,36 @@
 # commands on the .kinamp_cmd FIFO, so the plugin can pause/skip/seek without
 # restarting the process.
 
-KINAMPMIN=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "KinAMP-minimal" || echo "KinAMP-minimal-pw2")
+KINAMP_DIR=/mnt/us/KinAMP
 
-LIBDIR=$([ -f /lib/ld-linux-armhf.so.3 ] && echo "libs_hf/" || echo "libs_pw2/")
+# Is a shared library installed on this device? ldconfig is not on every
+# firmware, so look for the soname on disk first and only then ask it.
+have_lib() {
+    for dir in /usr/lib /lib /usr/lib/arm-linux-gnueabihf /lib/arm-linux-gnueabihf /usr/local/lib; do
+        [ -e "$dir/$1" ] && return 0
+    done
+    ldconfig -p 2>/dev/null | grep -q -- "$1"
+}
+
+# Same flavour pick as startkinamp.sh: the plain armhf binaries link GStreamer
+# 0.10, the *-gst ones link 1.0 (newer firmwares). Keep both scripts in step.
+gst_suffix() {
+    have_lib libgstreamer-0.10.so.0 && return 0
+    if have_lib libgstreamer-1.0.so.0 && [ -f "$KINAMP_DIR/KinAMP-minimal-gst" ]; then
+        echo "-gst"
+    fi
+}
+
+if [ -f /lib/ld-linux-armhf.so.3 ]; then
+    LIBDIR="libs_hf/"
+    SUFFIX=$(gst_suffix)
+else
+    LIBDIR="libs_pw2/"
+    SUFFIX="-pw2"
+fi
 export LD_LIBRARY_PATH=$LIBDIR
 
-KINAMP_DIR=/mnt/us/KinAMP
+KINAMPMIN="KinAMP-minimal$SUFFIX"
 # Runtime files live on a filesystem that can hold a FIFO; /mnt/us (vfat)
 # cannot. Must match get_runtime_path() in cli_player.cpp.
 KINAMP_RUNTIME_DIR="${KINAMP_RUNTIME_DIR:-/tmp}"
