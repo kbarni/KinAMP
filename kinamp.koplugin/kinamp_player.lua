@@ -497,6 +497,14 @@ function KinAMPPlayer:doRefresh(force)
         self.last = status
     end
 
+    -- Whatever changed while a dialog was in the way never made it to the
+    -- screen, and self.last has moved on since, so the per-region flags can't
+    -- find it any more. Put the whole frame up instead.
+    if self._deferred_refresh and self:isTopmost() then
+        self._deferred_refresh = nil
+        repaint_all = true
+    end
+
     if repaint_all then
         self:refreshRegion(self.frame)
     else
@@ -507,10 +515,46 @@ function KinAMPPlayer:doRefresh(force)
         -- gets the cheapest refresh we have.
         if repaint_progress then self:refreshRegion(self.progress_frame, "fast") end
     end
+
+    -- UIManager sends CloseWidget before it pops the window stack, so a dialog
+    -- closing on us is still the topmost widget while its close callback runs.
+    -- Look again once the stack has settled instead of waiting out a poll.
+    if force and self._deferred_refresh then
+        UIManager:nextTick(function() self:catchUp() end)
+    end
+end
+
+-- Whether the player is the window an e-ink update would land on. Anything
+-- shown over it - the menu, the queue, a message, the keyboard - makes this
+-- false.
+function KinAMPPlayer:isTopmost()
+    -- No accessor on older KOReader: assume we're on top rather than never
+    -- refreshing again.
+    if not UIManager.getTopmostVisibleWidget then return true end
+    local top = UIManager:getTopmostVisibleWidget()
+    return top == nil or top == self
+end
+
+-- Picks up whatever was skipped while a dialog covered the player.
+function KinAMPPlayer:catchUp()
+    if not self._deferred_refresh or not self:isTopmost() then return end
+    self._deferred_refresh = nil
+    self:refreshRegion(self.frame)
 end
 
 function KinAMPPlayer:refreshRegion(widget, refresh_type)
     if not widget or not widget.dimen then return end
+    -- Refreshing a region we no longer own drives an e-ink update across
+    -- somebody else's window. That matters most for the progress tick, which
+    -- asks for "fast": on Kindle that is the DU waveform, two levels only, so
+    -- every grey in the rectangle it covers - a dialog's separators, borders
+    -- and anti-aliased text - is pushed to black or white. Once a second, that
+    -- is what leaves an open menu looking partly blank. The widgets already
+    -- hold the new state; note that the screen doesn't and leave it there.
+    if not self:isTopmost() then
+        self._deferred_refresh = true
+        return
+    end
     UIManager:setDirty(self, function()
         return refresh_type or "ui", widget.dimen
     end)
