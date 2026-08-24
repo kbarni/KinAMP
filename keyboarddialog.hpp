@@ -16,6 +16,13 @@
 #include <string>
 #include <vector>
 
+// Every window has to carry this title: the Kindle window manager reads it to
+// decide the layer a window belongs to, and one it does not recognize is never
+// mapped. Defined here so the dialogs cannot drift apart.
+#ifndef KINAMP_DIALOG_TITLE
+#define KINAMP_DIALOG_TITLE "L:D_N:dialog_ID:com.kbarni.kinamp"
+#endif
+
 // ------------------------------------------------------------------ internals
 
 struct KeyboardDialogState {
@@ -131,7 +138,7 @@ static bool show_keyboard_dialog(GtkWindow *parent, const char *title, const cha
     bool is_small = (width < 1000);
     int key_height = is_small ? 42 : 64;
 
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("L:D_N:dialog_ID:com.kbarni.kinamp",
+    GtkWidget *dialog = gtk_dialog_new_with_buttons(KINAMP_DIALOG_TITLE,
                                                     parent,
                                                     GTK_DIALOG_MODAL,
                                                     NULL);
