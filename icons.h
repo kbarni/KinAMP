@@ -31,6 +31,8 @@
 #include "assets/display_icon-lr.h"
 #include "assets/radio_icon.h"
 #include "assets/radio_icon-lr.h"
+#include "assets/radio_editor.h"
+#include "assets/radio_editor-lr.h"
 #include "assets/musiclibrary_icon.h"
 #include "assets/musiclibrary_icon-lr.h"
 #include "assets/song_add_icon.h"

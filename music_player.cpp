@@ -1969,8 +1969,8 @@ int main(int argc, char* argv[]) {
     app_data.radio_action_hbox = gtk_hbox_new(FALSE, 10);
     gtk_box_pack_start(GTK_BOX(bottom_action_hbox), app_data.radio_action_hbox, FALSE, FALSE, 0);
 
-    GtkWidget *manage_stations_button = gtk_button_new_with_label("Edit stations");
-    gtk_container_set_border_width(GTK_CONTAINER(manage_stations_button), 5);
+    GtkWidget *manage_stations_button = create_button_from_icon(
+        app_data.is_hires ? radio_editor : radio_editor_lr, btn_padding);
     g_signal_connect(manage_stations_button, "clicked",
                      G_CALLBACK(on_manage_stations_clicked), &app_data);
     gtk_box_pack_start(GTK_BOX(app_data.radio_action_hbox), manage_stations_button, FALSE, FALSE, 0);
