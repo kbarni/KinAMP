@@ -40,7 +40,7 @@ static void station_message(GtkWindow *parent, GtkMessageType type, const char *
 
     GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL, type,
                                                GTK_BUTTONS_OK, "%s", text);
-    gtk_window_set_title(GTK_WINDOW(dialog), "L:D_N:dialog_ID:com.kbarni.kinamp");
+    gtk_window_set_title(GTK_WINDOW(dialog), KINAMP_DIALOG_TITLE);
     gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
     g_free(text);
@@ -56,7 +56,7 @@ static bool station_confirm(GtkWindow *parent, const char *format, ...) {
 
     GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
                                                GTK_BUTTONS_YES_NO, "%s", text);
-    gtk_window_set_title(GTK_WINDOW(dialog), "L:D_N:dialog_ID:com.kbarni.kinamp");
+    gtk_window_set_title(GTK_WINDOW(dialog), KINAMP_DIALOG_TITLE);
     gint answer = gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
     g_free(text);
@@ -67,7 +67,8 @@ static bool station_confirm(GtkWindow *parent, const char *format, ...) {
 // and let GTK paint it before the call that stalls.
 static GtkWidget *station_busy_show(GtkWindow *parent, const char *text) {
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "L:D_N:dialog_ID:com.kbarni.kinamp");
+    gtk_window_set_title(GTK_WINDOW(window), KINAMP_DIALOG_TITLE);
+    gtk_window_set_type_hint(GTK_WINDOW(window), GDK_WINDOW_TYPE_HINT_DIALOG);
     gtk_window_set_transient_for(GTK_WINDOW(window), parent);
     gtk_window_set_modal(GTK_WINDOW(window), TRUE);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER_ON_PARENT);
@@ -105,7 +106,7 @@ static int station_pick_from_list(GtkWindow *parent, const char *title, const ch
     gint height = gdk_screen_get_height(screen);
     bool is_small = (width < 1000);
 
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("L:D_N:dialog_ID:com.kbarni.kinamp",
+    GtkWidget *dialog = gtk_dialog_new_with_buttons(KINAMP_DIALOG_TITLE,
                                                     parent, GTK_DIALOG_MODAL, NULL);
     gtk_window_set_default_size(GTK_WINDOW(dialog), width - 40, height - 120);
     gtk_container_set_border_width(GTK_CONTAINER(dialog), is_small ? 10 : 20);
@@ -330,8 +331,7 @@ static void station_add_manually(GtkWindow *parent, GtkListStore *store, GtkTree
 // --------------------------------------------------------- the manager dialog
 
 struct StationManagerData {
-    GtkWindow *parent;
-    GtkWidget *dialog;
+    GtkWindow *parent; // the application window: every nested dialog hangs off it
     GtkListStore *store;
     GtkTreeView *view;
     StationsChangedFn on_changed;
@@ -340,13 +340,13 @@ struct StationManagerData {
 
 static void on_station_add_db_clicked(GtkWidget *, gpointer user_data) {
     StationManagerData *md = (StationManagerData*)user_data;
-    station_add_from_database(GTK_WINDOW(md->dialog), md->store, md->view,
+    station_add_from_database(md->parent, md->store, md->view,
                               md->on_changed, md->user_data);
 }
 
 static void on_station_add_manual_clicked(GtkWidget *, gpointer user_data) {
     StationManagerData *md = (StationManagerData*)user_data;
-    station_add_manually(GTK_WINDOW(md->dialog), md->store, md->view,
+    station_add_manually(md->parent, md->store, md->view,
                          md->on_changed, md->user_data);
 }
 
@@ -357,14 +357,14 @@ static void on_station_remove_clicked(GtkWidget *, gpointer user_data) {
     GtkTreeModel *model;
     GtkTreeIter iter;
     if (!gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        station_message(GTK_WINDOW(md->dialog), GTK_MESSAGE_INFO,
+        station_message(md->parent, GTK_MESSAGE_INFO,
                         "Select the station to remove first.");
         return;
     }
 
     gchar *name = NULL;
     gtk_tree_model_get(model, &iter, STATION_COL_NAME, &name, -1);
-    bool confirmed = station_confirm(GTK_WINDOW(md->dialog), "Remove '%s'?", name ? name : "");
+    bool confirmed = station_confirm(md->parent, "Remove '%s'?", name ? name : "");
     g_free(name);
     if (!confirmed) return;
 
@@ -383,7 +383,7 @@ static void show_station_manager(GtkWindow *parent, GtkListStore *store,
     bool is_small = (width < 1000);
     int button_height = is_small ? 42 : 64;
 
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("L:D_N:dialog_ID:com.kbarni.kinamp",
+    GtkWidget *dialog = gtk_dialog_new_with_buttons(KINAMP_DIALOG_TITLE,
                                                     parent, GTK_DIALOG_MODAL, NULL);
     gtk_window_set_default_size(GTK_WINDOW(dialog), width - 40, height - 120);
     gtk_container_set_border_width(GTK_CONTAINER(dialog), is_small ? 10 : 20);
@@ -417,7 +417,6 @@ static void show_station_manager(GtkWindow *parent, GtkListStore *store,
 
     StationManagerData md;
     md.parent = parent;
-    md.dialog = dialog;
     md.store = store;
     md.view = GTK_TREE_VIEW(treeview);
     md.on_changed = on_changed;
