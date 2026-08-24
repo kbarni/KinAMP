@@ -10,8 +10,6 @@ KinAMP3 - It really whips the llama's ass!
 
 KinAMP is a native music and internet radio player developed for jailbroken Kindles. It runs as a standalone app or as a Koreader plugin, so you can keep listening while you read.
 
-**Only Firmware <5.19 supported in the beta. I'll try to make it work on newer devices ASAP**.
-
 Features
 --------
 
@@ -35,6 +33,8 @@ Features
 - OGG (Vorbis)
 - AAC
 
+KinAMP supports audio and radio metadata.
+
 **IMPORTANT NOTE** This is the *Beta* version of KinAMP3, an important update of this application. **It might contain bugs. Please report any bugs, ideas, suggestions** by filing an issue.
 
 Usage
@@ -56,13 +56,11 @@ Music decoding itself uses relatively little power; on an e-ink device, the fron
 
 Switch to radio mode using the button in the lower left corner. The playlist will be replaced with the radio station list.
 
-To build your favorite radio list, press **Edit stations** in the lower button bar. The station manager lists your stations and lets you add one from the provided list (*over 45000 radio stations!*) or by typing a name and URL by hand - text is entered on the built-in on-screen keyboard, so no system keyboard is needed. Playlist links (`.pls`, `.m3u`) are unwrapped to the stream address automatically.
-
-The same job can also be done outside the player with the **Radio list editor** utility from KUAL.
+To build your favorite radio list, press **Edit stations** in the lower button bar. The station manager lists your stations and lets you add one from the provided list (*over 45000 radio stations!*) or by typing a name and URL by hand. Playlist links (`.pls`, `.m3u`) are unwrapped to the stream address automatically.
 
 ##### Creating a station list manually
 
-Create a file called `.kinamp_radio.txt` in a text editor, listing your preferred stations one per line in the format `Station name|URL`. Example:
+Create a file called `.kinamp_radio.txt` in a text editor, listing your preferred stations one per line in the format `Station name|URL`. Example
 
     Virgin Radio|http://icy.unitedradio.it/VirginHardRock.mp3
 
