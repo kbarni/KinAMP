@@ -422,6 +422,20 @@ function Backend.get_stations()
     return stations
 end
 
+-- The station list's name for `url`, or nil when the stream isn't one of the
+-- saved stations. The player reports a station name of its own, but only when
+-- it was started on the list; asked to play a single URL it calls that stream
+-- "Custom Stream" whether or not it is one of ours, so the name has to be
+-- recovered here. URLs are matched as saved - save_stations() has already
+-- stripped whitespace, and the player echoes the URL back verbatim.
+function Backend.station_name(url)
+    if not url or url == "" then return nil end
+    for _, s in ipairs(Backend.get_stations()) do
+        if s.url == url then return s.name end
+    end
+    return nil
+end
+
 -- Replaces the station file. It's one "name|url" record per line with no
 -- quoting at all (see load_radio_stations() in cli_player.cpp), so a name
 -- carrying a separator or a newline would silently become a different station,

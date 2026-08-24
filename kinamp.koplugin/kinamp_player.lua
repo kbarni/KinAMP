@@ -439,17 +439,27 @@ function KinAMPPlayer:doRefresh(force)
         if self.play_button:setIconFile("play.svg") then repaint_all = true end
         self.last = NOT_RUNNING
     else
+        -- The station's name goes with the stream, not with the track, so it is
+        -- resolved once per stream instead of on every ICY title update.
+        if track_changed then
+            self.station_name = status.is_radio
+                                and Backend.station_name(status.path) or nil
+        end
+
         if track_changed or (last and last.title ~= status.title)
                 or (last and last.artist ~= status.artist) then
             -- Radio streams carry the whole "Artist - Title" in one ICY field
             -- and have no artist of their own; fall back to the station name.
+            -- The player calls anything it was handed as a single URL a "Custom
+            -- Stream", so prefer the list's own name when the stream is in it.
             local title = status.title
             if not title or title == "" then
                 title = status.path and (status.path:match("([^/]+)$") or status.path) or _("Unknown")
             end
             self.title_text:setText(title)
             self.artist_text:setText(status.artist ~= "" and status.artist
-                                     or (status.is_radio and status.station or ""))
+                                     or (status.is_radio
+                                         and (self.station_name or status.station) or ""))
             repaint_info = true
         end
 
