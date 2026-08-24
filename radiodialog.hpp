@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "keyboarddialog.hpp"
+#include "kindledialog.hpp"
 #include "station_db.h"
 
 // Station store columns, matching the player's radio_store.
@@ -41,8 +42,9 @@ static void station_message(GtkWindow *parent, GtkMessageType type, const char *
     GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL, type,
                                                GTK_BUTTONS_OK, "%s", text);
     gtk_window_set_title(GTK_WINDOW(dialog), KINAMP_DIALOG_TITLE);
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+    kindle_dialog_show(dialog);
+    kindle_dialog_run(dialog);
+    kindle_dialog_destroy(dialog);
     g_free(text);
 }
 
@@ -57,8 +59,9 @@ static bool station_confirm(GtkWindow *parent, const char *format, ...) {
     GtkWidget *dialog = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
                                                GTK_BUTTONS_YES_NO, "%s", text);
     gtk_window_set_title(GTK_WINDOW(dialog), KINAMP_DIALOG_TITLE);
-    gint answer = gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+    kindle_dialog_show(dialog);
+    gint answer = kindle_dialog_run(dialog);
+    kindle_dialog_destroy(dialog);
     g_free(text);
     return answer == GTK_RESPONSE_YES;
 }
@@ -76,16 +79,13 @@ static GtkWidget *station_busy_show(GtkWindow *parent, const char *text) {
 
     GtkWidget *label = gtk_label_new(text);
     gtk_container_add(GTK_CONTAINER(window), label);
-    gtk_widget_show_all(window);
-
-    while (gtk_events_pending()) gtk_main_iteration();
+    kindle_dialog_show(window);
     return window;
 }
 
 static void station_busy_hide(GtkWidget *window) {
     if (!window) return;
-    gtk_widget_destroy(window);
-    while (gtk_events_pending()) gtk_main_iteration();
+    kindle_dialog_destroy(window);
 }
 
 static void on_station_row_activated(GtkTreeView *, GtkTreePath *, GtkTreeViewColumn *,
@@ -171,10 +171,10 @@ static int station_pick_from_list(GtkWindow *parent, const char *title, const ch
     gtk_widget_set_size_request(ok_button, is_small ? 120 : 200, is_small ? 42 : 64);
     gtk_widget_set_size_request(cancel_button, is_small ? 120 : 200, is_small ? 42 : 64);
 
-    gtk_widget_show_all(dialog);
+    kindle_dialog_show(dialog);
 
     int result = -1;
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
+    if (kindle_dialog_run(dialog) == GTK_RESPONSE_OK) {
         GtkTreeSelection *selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeview));
         GtkTreeModel *model;
         GtkTreeIter iter;
@@ -187,7 +187,7 @@ static int station_pick_from_list(GtkWindow *parent, const char *title, const ch
     }
     if (selected && result >= 0) *selected = result;
 
-    gtk_widget_destroy(dialog);
+    kindle_dialog_destroy(dialog);
     return result;
 }
 
@@ -443,9 +443,9 @@ static void show_station_manager(GtkWindow *parent, GtkListStore *store,
     GtkWidget *close_button = gtk_dialog_add_button(GTK_DIALOG(dialog), "Close", GTK_RESPONSE_CLOSE);
     gtk_widget_set_size_request(close_button, is_small ? 120 : 200, button_height);
 
-    gtk_widget_show_all(dialog);
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+    kindle_dialog_show(dialog);
+    kindle_dialog_run(dialog);
+    kindle_dialog_destroy(dialog);
 }
 
 #endif // RADIODIALOG_HPP

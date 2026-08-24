@@ -16,12 +16,7 @@
 #include <string>
 #include <vector>
 
-// Every window has to carry this title: the Kindle window manager reads it to
-// decide the layer a window belongs to, and one it does not recognize is never
-// mapped. Defined here so the dialogs cannot drift apart.
-#ifndef KINAMP_DIALOG_TITLE
-#define KINAMP_DIALOG_TITLE "L:D_N:dialog_ID:com.kbarni.kinamp"
-#endif
+#include "kindledialog.hpp"
 
 // ------------------------------------------------------------------ internals
 
@@ -237,13 +232,13 @@ static bool show_keyboard_dialog(GtkWindow *parent, const char *title, const cha
     gtk_widget_set_size_request(cancel_button, is_small ? 120 : 200, key_height);
     gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
 
-    gtk_widget_show_all(dialog);
+    kindle_dialog_show(dialog);
 
-    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gint response = kindle_dialog_run(dialog);
     bool accepted = (response == GTK_RESPONSE_OK);
     if (accepted) text = keyboard_get_text(&state);
 
-    gtk_widget_destroy(dialog);
+    kindle_dialog_destroy(dialog);
     return accepted;
 }
 
