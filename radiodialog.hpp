@@ -88,6 +88,28 @@ static void station_busy_hide(GtkWidget *window) {
     kindle_dialog_destroy(window);
 }
 
+// An ellipsizing renderer asks for almost no width, so without a fixed size
+// the name column ends up a sliver next to the stream URL. Give the name 40%
+// of the list and let the URL column take what is left.
+static void station_set_column_widths(GtkWidget *treeview, int list_width) {
+    GtkTreeViewColumn *name_column = gtk_tree_view_get_column(GTK_TREE_VIEW(treeview), 0);
+    GtkTreeViewColumn *url_column = gtk_tree_view_get_column(GTK_TREE_VIEW(treeview), 1);
+    if (!name_column || !url_column || list_width <= 0) return;
+
+    int name_width = (list_width * 2) / 5;
+    gtk_tree_view_column_set_sizing(name_column, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_fixed_width(name_column, name_width);
+    gtk_tree_view_column_set_sizing(url_column, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_fixed_width(url_column, list_width - name_width);
+    gtk_tree_view_column_set_expand(url_column, TRUE);
+}
+
+// The width the rows actually get: the dialog minus its borders and the
+// scrollbar.
+static int station_list_width(gint screen_width, bool is_small) {
+    return screen_width - 40 - 2 * (is_small ? 10 : 20) - 30;
+}
+
 static void on_station_row_activated(GtkTreeView *, GtkTreePath *, GtkTreeViewColumn *,
                                      gpointer user_data) {
     gtk_dialog_response(GTK_DIALOG(user_data), GTK_RESPONSE_OK);
@@ -152,6 +174,8 @@ static int station_pick_from_list(GtkWindow *parent, const char *title, const ch
         gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(treeview), -1, "Stream",
                                                     sub_renderer, "text", 1, NULL);
     }
+
+    station_set_column_widths(treeview, station_list_width(width, is_small));
 
     GtkWidget *scrolled = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
@@ -408,6 +432,7 @@ static void show_station_manager(GtkWindow *parent, GtkListStore *store,
     g_object_set(url_renderer, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
     gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(treeview), -1, "Stream",
                                                 url_renderer, "text", STATION_COL_URL, NULL);
+    station_set_column_widths(treeview, station_list_width(width, is_small));
 
     GtkWidget *scrolled = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
