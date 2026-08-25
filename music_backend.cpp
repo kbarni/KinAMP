@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <signal.h>
@@ -50,6 +51,25 @@ static inline gboolean kinamp_query_duration(GstElement *pipeline, gint64 *durat
 #endif
 
 const char* PIPE_PATH = "/tmp/kinamp_audio_pipe";
+
+// Where the decoded PCM goes. A pipeline tail rather than a bare element name,
+// because the two targets need different things in front of the sink:
+//
+//   Kindle  mixersink            Lab126's own sink, the only one on the device
+//   Kobo    ... ! pulsesink      audio is Bluetooth A2DP through PulseAudio
+//
+// The compile-time default comes from KINAMP_AUDIO_SINK (see CMakeLists.txt).
+// KINAMP_SINK overrides it at runtime, which is how a device that wants
+// alsasink or autoaudiosink gets one without a rebuild.
+#ifndef KINAMP_AUDIO_SINK
+#define KINAMP_AUDIO_SINK "mixersink"
+#endif
+
+static const char* audio_sink() {
+    const char* env = getenv("KINAMP_SINK");
+    if (env && *env) return env;
+    return KINAMP_AUDIO_SINK;
+}
 
 // How much of a stream may be buffered for format sniffing before decoding.
 #define STREAM_PEEK_MAX 8192
@@ -1255,13 +1275,13 @@ void MusicBackend::play_file(const char* filepath, int start_time) {
     GError *pipeline_error = NULL;
 #ifdef GST10
     gchar *pipeline_desc = g_strdup_printf(
-        "filesrc location=\"%s\" ! audio/x-raw, format=S16LE, layout=interleaved, rate=%d, channels=2 ! queue ! mixersink",
-        PIPE_PATH, rate
+        "filesrc location=\"%s\" ! audio/x-raw, format=S16LE, layout=interleaved, rate=%d, channels=2 ! queue ! %s",
+        PIPE_PATH, rate, audio_sink()
     );
 #else
     gchar *pipeline_desc = g_strdup_printf(
-        "filesrc location=\"%s\" ! audio/x-raw-int, endianness=1234, signed=true, width=16, depth=16, rate=%d, channels=2 ! queue ! mixersink",
-        PIPE_PATH, rate
+        "filesrc location=\"%s\" ! audio/x-raw-int, endianness=1234, signed=true, width=16, depth=16, rate=%d, channels=2 ! queue ! %s",
+        PIPE_PATH, rate, audio_sink()
     );
 #endif
     pipeline = gst_parse_launch(pipeline_desc, &pipeline_error);

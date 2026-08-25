@@ -377,7 +377,7 @@ function KinAMPPlayer:buildCover(path, size)
         end
     end
     return ImageWidget:new{
-        file = ICON_DIR .. "kinamp-icon.png",
+        file = ICON_DIR .. "kinamp_icon.png",
         width = size,
         height = size,
         scale_factor = 0,
