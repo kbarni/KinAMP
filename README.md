@@ -107,12 +107,14 @@ Then install KinAMP:
 
 Download the [latest release](https://github.com/kbarni/KinAMP/releases) and unzip it to the root of the Kindle's storage. Start it from KUAL or from the home screen.
 
-### Kobo
+Kobo
+----
 
-Kobo devices run the Koreader plugin only - there is no native app, since the GTK2 interface
-and the Kindle's Bluetooth and frontlight controls have no counterpart there.
+KinAMP3 has experimental support for Kobo devices.
 
-Download `kinamp-kobo.zip` and unzip it to the root of the Kobo's storage. It installs:
+Kobo devices run the Koreader plugin only - there is no native app.
+
+To install, download `kinamp-kobo.zip` from the release and unzip it to the root of the Kobo's storage. It installs:
 
 ```
 .adds/koreader/kinamp/                   the player and its libraries
